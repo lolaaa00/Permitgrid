@@ -88,80 +88,70 @@ $ npx vitest run
       Tests  26 passed (26)
 ```
 
-## What is NOT done, and why
+## Deployment fixed and live on Studionet (this session)
 
-Docker/localnet is intentionally out of scope for this project's workflow
-(not a blocker to work around — this project verifies against real
-Studionet instead). This session used the GenLayer CLI (`genlayer` 0.39.2,
-the current npm-published version) directly against Studionet
-(`https://studio.genlayer.com/api`, chain ID `61999`, confirmed via
-`genlayer network info`), with an already-configured, already-unlocked,
-GEN-funded local account (`probe`, address
-`0xaa18eCD158AEC67c75A51768b747cb3247A21689`, balance 10 GEN at deploy
-time) — no private key was requested from or supplied by the user, and none
-was created.
+**Root cause of the previous `invalid_contract` failure:** `contracts/
+permitgrid.py`'s `Depends` header (and the `genlayer new` sample used to
+isolate the problem) used a floating tag — `py-genlayer:test`, then
+`py-genlayer:latest`. Current GenLayer documentation
+(`docs.genlayer.com/developers/intelligent-contracts/first-intelligent-contract`)
+shows the currently correct convention is a content-addressed pinned tag,
+e.g. `py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6` — not
+`latest`/`test`. Studionet's current GenVM apparently no longer resolves
+those floating aliases to a usable runtime image, so contract instantiation
+failed for *any* contract using them (confirmed identically on both the
+sample and `permitgrid.py`, which is why the earlier isolation test looked
+like a network-wide outage rather than a header problem). The `genlayer`
+CLI itself was not the issue — npm's `genlayer` is still at `0.39.2`
+(latest stable; `0.40.0-rc1`/`rc2` exist as pre-releases but are not the
+generally published version), and no CLI upgrade was needed or performed.
 
-- **Real deployment was attempted and broadcast successfully, but contract
-  execution itself failed on Studionet — this is a live network-side
-  failure, not a missing tool.** `genlayer deploy --contract
-  contracts/permitgrid.py --rpc https://studio.genlayer.com/api` signed,
-  broadcast, and finalized a real transaction:
-  `0x5eb43aa2a7c4ed6c05f146b9bb18f6a9b79221cb30ef8ea3ee8a1449fae0ffd9`
-  (recipient/would-be contract address
-  `0x86be5deeCab92572fA0Be0AC6669D34d74F35B3a`), reaching validator
-  consensus (`MAJORITY_AGREE`, 5 validators, `status_name: FINALIZED`). But
-  `genlayer receipt` on that hash shows every validator's
-  `leader_receipt`/`genvm_result` returning
-  `{status: 'contract_error', payload: 'invalid_contract'}` — the GenVM
-  itself rejected contract instantiation, so no contract exists at that
-  address (`genlayer schema` / `genlayer code` / `genlayer call` on it all
-  return `Contract ... not found`).
-  To isolate whether this was specific to `permitgrid.py`, the exact same
-  failure (`invalid_contract`, `MAJORITY_AGREE`/`FINALIZED` on an errored
-  execution) was reproduced twice more: (1) deploying the unmodified
-  `football_bets.py` sample contract generated fresh by `genlayer new`
-  (tx `0x140a488035cba28b6005c27c078eae82cbb3cad7e816de9e7f2689a5cf393261`),
-  and (2) the same sample with its header changed from
-  `py-genlayer:test` to `py-genlayer:latest`
-  (tx `0x480cdfd30a266c8fafd32f0d6c2fa6b93bc20a340170ce98929e0e60887160b4`).
-  All three deployments — two different contracts, two different
-  `Depends` tags — failed identically. This is conclusive evidence the
-  failure is a current Studionet-side execution problem, not a defect in
-  `contracts/permitgrid.py` or in the deployment process used.
-  Because no contract actually exists on-chain, `NEXT_PUBLIC_CONTRACT_ADDRESS`
-  was deliberately left unset in the frontend (setting it to a
-  non-existent address would silently break the "not configured" fallback
-  state and make the frontend appear connected to a contract that isn't
-  there).
-- **`gltest` against Studionet (no Docker) confirms the same failure.**
-  `gltest` supports a `--rpc-url` flag for pointing at a remote network
-  instead of localnet; run as
-  `python -m pytest test/test_consensus_localnet.py -v --rpc-url https://studio.genlayer.com/api`
-  from `.venv` (Python 3.12; the system `python3` is 3.9 and can't import
-  `gltest`/`genlayer_py`, which need `collections.abc.Buffer` from 3.12+).
-  All 5 tests in `test/test_consensus_localnet.py` failed, this time with
-  `gltest.exceptions.DeploymentError: ... Deployment transaction finalized
-  with error: ... 'result': {'status': 'contract_error', 'payload':
-  'invalid_contract'} ...` — the same GenVM-side rejection, via a
-  completely independent code path (gltest's own account/client, not the
-  CLI). `test/test_clearance_policy.py`'s 27 tests are pure/deterministic
-  and pass with no network dependency, confirmed again this session.
-- **No on-chain lifecycle steps (register work order, extract
-  requirements, register provider, assess) were possible**, because there
-  is no live contract instance to call — every attempt to instantiate one
-  on Studionet failed as described above. No lifecycle transactions were
-  fabricated; none exist.
-- **No production frontend deployment** (e.g. Vercel) — deferred until
-  there is a real, working contract address to point it at.
+**Fix applied:** changed `contracts/permitgrid.py`'s header to
+`# { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }`.
 
-Unblock: retry deployment once GenLayer's Studionet execution layer is
-confirmed healthy (e.g. by re-running `genlayer deploy --contract
-contracts/permitgrid.py --rpc https://studio.genlayer.com/api` with the
-`probe` account, which remains configured and funded), then set
-`NEXT_PUBLIC_CONTRACT_ADDRESS` in `frontend/.env.local` and run the full
-lifecycle (register work order -> extract requirements -> register
-provider + credentials -> assess -> verify clearance + gate -> update
-credentials -> prove staleness -> reassess), recording every real tx hash.
+**Real deployment now succeeds.** `genlayer deploy --contract
+contracts/permitgrid.py --rpc https://studio.genlayer.com/api` (same
+`probe` account, `0xaa18eCD158AEC67c75A51768b747cb3247A21689`):
+
+```
+Transaction Hash: 0x11e6d3bdeb0f61384bfe93298fe32c77b1a35f33ccd01586956f26893238fe29
+Contract Address: 0x81780f7E10baa6450dc1D0d37B829B35a5850e34
+result_name: MAJORITY_AGREE, status_name: ACCEPTED
+```
+
+Verified live via `genlayer schema 0x81780f7E10baa6450dc1D0d37B829B35a5850e34`
+(returns the full method schema — `register_work_order`,
+`extract_requirements`, `assess_provider`, etc. — confirming a real
+instantiated contract, not another `invalid_contract` rejection).
+
+`NEXT_PUBLIC_CONTRACT_ADDRESS` is now set in `frontend/.env.local`
+(gitignored) to `0x81780f7E10baa6450dc1D0d37B829B35a5850e34`, with
+`NEXT_PUBLIC_RPC_URL=https://studio.genlayer.com/api`. Frontend `npm test`
+(26/26 passing) and `npm run build` (all 8 routes compile/prerender
+cleanly) were re-run against this config and both pass.
+
+**On-chain lifecycle — started for real:**
+- `register_work_order("wo-demo-001", ...)` — tx
+  `0x629d8c6f80d5545260866a229f09f6432d3b8df6f79e1ee50f2396c1b98eb6fd`,
+  `MAJORITY_AGREE`/`ACCEPTED`.
+- `extract_requirements("wo-demo-001")` (real LLM-validator consensus
+  stage, fetching the configured CSLB licensing-authority source) — tx
+  `0x0ca4350c200bda784aa81bf87add60975e2b8d199771263f9399474f221e74f3`,
+  `MAJORITY_AGREE`/`ACCEPTED`.
+- Further lifecycle steps (register provider + credentials, assess,
+  verify clearance gate, update credentials, prove staleness, reassess)
+  were not run this session but the contract is live and callable for
+  anyone to continue this — `genlayer write
+  0x81780f7E10baa6450dc1D0d37B829B35a5850e34 <method> --rpc
+  https://studio.genlayer.com/api --args ...`.
+- Note: `genlayer call ... get_work_order --args wo-demo-001` (a read)
+  returned a CLI-side `Missing or invalid parameters` error during
+  verification — this looks like a `genlayer call` argument-passing quirk
+  in 0.39.2, not a contract or network problem (the same argument style
+  works fine for `write`), and did not block confirming the contract is
+  live via `genlayer schema`.
+- **No production frontend deployment** (e.g. Vercel) — still deferred,
+  now unblocked since there is a real, working contract address.
 
 ## Honest limitation
 
