@@ -1,0 +1,16 @@
+# GenLayer test-runner network configuration for PermitGrid.
+#
+# `gltest` (the pytest-based GenLayer contract test runner) needs Docker to
+# run the "localnet" network (genlayer up) that the consensus-path tests in
+# test/test_consensus_localnet.py target. It is not required for the plain
+# deterministic unit tests in test/test_clearance_policy.py, which run under
+# ordinary pytest with no network at all.
+networks:
+  localnet:
+    url: http://localhost:4000/api
+    accounts: default
+
+  studionet:
+    url: https://studio.genlayer.com/api
+    chainId: 61999
+    accounts: default

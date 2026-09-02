@@ -24,3 +24,21 @@
 /INTERNAL_*.md
 /REVIEWER_*.md
 /SCORING_*.md
+
+# Local Claude Code harness state (session locks, not project content)
+.claude/
+
+# Build tooling / dependencies
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+frontend/.next/
+frontend/out/
+frontend/node_modules/
+.env
+.env.local
+*.keystore.json
+.DS_Store
+.pytest_cache/
+frontend/coverage/
