@@ -1,0 +1,202 @@
+@import "tailwindcss";
+
+:root {
+  --pg-paper: #efede5;
+  --pg-paper-raised: #e6e3d8;
+  --pg-ink: #151815;
+  --pg-ink-muted: #62665f;
+  --pg-rule: #b7bbb3;
+  --pg-green: #385d48;
+  --pg-green-bg: #dbe6dd;
+  --pg-amber: #a66a22;
+  --pg-amber-bg: #f0e0c8;
+  --pg-red: #89382f;
+  --pg-red-bg: #ecd9d5;
+  --pg-blue: #3a5c70;
+  --pg-blue-bg: #d9e3e7;
+  --pg-carbon: #282c29;
+  --pg-carbon-ink: #efede5;
+
+  --background: var(--pg-paper);
+  --foreground: var(--pg-ink);
+}
+
+@theme inline {
+  --color-paper: var(--pg-paper);
+  --color-paper-raised: var(--pg-paper-raised);
+  --color-ink: var(--pg-ink);
+  --color-ink-muted: var(--pg-ink-muted);
+  --color-rule: var(--pg-rule);
+  --color-green: var(--pg-green);
+  --color-green-bg: var(--pg-green-bg);
+  --color-amber: var(--pg-amber);
+  --color-amber-bg: var(--pg-amber-bg);
+  --color-red: var(--pg-red);
+  --color-red-bg: var(--pg-red-bg);
+  --color-blue: var(--pg-blue);
+  --color-blue-bg: var(--pg-blue-bg);
+  --color-carbon: var(--pg-carbon);
+  --color-carbon-ink: var(--pg-carbon-ink);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-body);
+  --font-mono: var(--font-ident);
+}
+
+* {
+  border-color: var(--pg-rule);
+}
+
+html,
+body {
+  background: var(--pg-paper);
+  color: var(--pg-ink);
+}
+
+body {
+  font-family: var(--font-body), -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.font-ident {
+  font-family: var(--font-ident), "SFMono-Regular", Menlo, Consolas, monospace;
+  letter-spacing: 0.01em;
+}
+
+/* Focus rings: always visible, never suppressed */
+:focus-visible {
+  outline: 2px solid var(--pg-blue);
+  outline-offset: 2px;
+}
+
+a,
+button,
+input,
+select,
+textarea {
+  min-height: 0;
+}
+
+button,
+[role="button"],
+a.btn {
+  min-height: 44px;
+}
+
+.hairline {
+  border: 1px solid var(--pg-rule);
+}
+
+.hairline-b {
+  border-bottom: 1px solid var(--pg-rule);
+}
+
+.hairline-t {
+  border-top: 1px solid var(--pg-rule);
+}
+
+table.permit-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+table.permit-table th,
+table.permit-table td {
+  border: 1px solid var(--pg-rule);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+table.permit-table th {
+  background: var(--pg-paper-raised);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+  color: var(--pg-ink-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+.pg-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 44px;
+  padding: 0.55rem 1.1rem;
+  border: 1px solid var(--pg-ink);
+  border-radius: 2px;
+  background: var(--pg-ink);
+  color: var(--pg-paper);
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition: background-color 0.1s ease, color 0.1s ease;
+}
+.pg-btn:hover:not(:disabled) {
+  background: var(--pg-carbon);
+}
+.pg-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.pg-btn-outline {
+  background: transparent;
+  color: var(--pg-ink);
+}
+.pg-btn-outline:hover:not(:disabled) {
+  background: var(--pg-ink);
+  color: var(--pg-paper);
+}
+
+.pg-input,
+.pg-select,
+.pg-textarea {
+  width: 100%;
+  min-height: 44px;
+  background: var(--pg-paper-raised);
+  border: 1px solid var(--pg-rule);
+  border-radius: 2px;
+  padding: 0.5rem 0.65rem;
+  color: var(--pg-ink);
+  font-size: 0.92rem;
+}
+.pg-textarea {
+  min-height: 88px;
+  resize: vertical;
+}
+.pg-input:focus,
+.pg-select:focus,
+.pg-textarea:focus {
+  border-color: var(--pg-ink);
+}
+
+.pg-label {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--pg-ink-muted);
+  margin-bottom: 0.3rem;
+}
+
+.pg-card {
+  background: var(--pg-paper-raised);
+  border: 1px solid var(--pg-rule);
+  border-radius: 2px;
+}
