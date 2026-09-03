@@ -460,11 +460,11 @@ class PermitGrid(gl.Contract):
         )
         self.work_orders[work_order_id] = wo
         self.work_order_ids.append(work_order_id)
-        srcs: DynArray[RegSource] = DynArray[RegSource]()
+        srcs = []
         for s in clean_sources:
             srcs.append(RegSource(url=s["url"], role=s["role"]))
         self.work_order_sources[work_order_id] = srcs
-        self.requirement_history[work_order_id] = DynArray[RequirementSetEntry]()
+        self.requirement_history[work_order_id] = []
 
     @gl.public.write
     def update_regulatory_sources(self, work_order_id: str, sources: list) -> None:
@@ -477,7 +477,7 @@ class PermitGrid(gl.Contract):
 
         wo.source_version += 1
         wo.status = "NEEDS_REQUIREMENTS"
-        srcs: DynArray[RegSource] = DynArray[RegSource]()
+        srcs = []
         for s in clean_sources:
             srcs.append(RegSource(url=s["url"], role=s["role"]))
         self.work_order_sources[work_order_id] = srcs
@@ -509,7 +509,7 @@ class PermitGrid(gl.Contract):
             fetched = []
             for s in source_list:
                 try:
-                    text = gl.get_webpage(s["url"], mode="text")
+                    text = gl.nondet.web.render(s["url"], mode="text")
                 except Exception as e:
                     text = f"[FETCH_UNAVAILABLE: {e}]"
                 fetched.append(
@@ -568,7 +568,7 @@ Return between 1 and {MAX_REQUIREMENTS_PER_SET} requirements as JSON:
 
 Respond with ONLY that JSON object, nothing else.
 """
-            result = gl.exec_prompt(task)
+            result = gl.nondet.exec_prompt(task)
             parsed = _parse_json_object(result)
             reqs = parsed.get("requirements", [])
             if not isinstance(reqs, list) or len(reqs) == 0:
@@ -595,7 +595,7 @@ Respond with ONLY that JSON object, nothing else.
                 )
             return json.dumps({"requirements": normalized}, sort_keys=True)
 
-        raw = gl.eq_principle_prompt_comparative(
+        raw = gl.eq_principle.prompt_comparative(
             extract,
             principle=(
                 "For every requirement: `type`, `mandatory`, and `target_value` "
@@ -609,7 +609,7 @@ Respond with ONLY that JSON object, nothing else.
         parsed = json.loads(raw)
         reqs = parsed["requirements"]
 
-        entry_requirements: DynArray[Requirement] = DynArray[Requirement]()
+        entry_requirements = []
         for r in reqs:
             entry_requirements.append(
                 Requirement(
@@ -660,7 +660,7 @@ Respond with ONLY that JSON object, nothing else.
         )
         self.providers[provider_id] = provider
         self.provider_ids.append(provider_id)
-        self.credential_history[provider_id] = DynArray[CredentialSubmissionEntry]()
+        self.credential_history[provider_id] = []
 
     @gl.public.write
     def create_credential_submission(self, provider_id: str, sources: list) -> None:
@@ -679,7 +679,7 @@ Respond with ONLY that JSON object, nothing else.
         if len(history) >= MAX_HISTORY_ENTRIES:
             raise Exception("credential history cap reached")
         new_version = len(history) + 1
-        srcs: DynArray[RegSource] = DynArray[RegSource]()
+        srcs = []
         for s in clean_sources:
             srcs.append(RegSource(url=s["url"], role=s["role"]))
         history.append(
@@ -739,7 +739,7 @@ Respond with ONLY that JSON object, nothing else.
             fetched = []
             for s in cred_sources:
                 try:
-                    text = gl.get_webpage(s["url"], mode="text")
+                    text = gl.nondet.web.render(s["url"], mode="text")
                 except Exception as e:
                     text = f"[FETCH_UNAVAILABLE: {e}]"
                 fetched.append(
@@ -797,7 +797,7 @@ Return JSON:
 You must return exactly one item per requirement_id given above, same
 order. Respond with ONLY that JSON object, nothing else.
 """
-            result = gl.exec_prompt(task)
+            result = gl.nondet.exec_prompt(task)
             parsed = _parse_json_object(result)
             items = parsed.get("items", [])
             if not isinstance(items, list) or len(items) == 0:
@@ -842,7 +842,7 @@ order. Respond with ONLY that JSON object, nothing else.
             normalized.sort(key=lambda x: x["requirement_id"])
             return json.dumps({"items": normalized}, sort_keys=True)
 
-        raw = gl.eq_principle_prompt_comparative(
+        raw = gl.eq_principle.prompt_comparative(
             assess,
             principle=(
                 "For every requirement_id, the `result` field must match "
@@ -855,7 +855,7 @@ order. Respond with ONLY that JSON object, nothing else.
         parsed = json.loads(raw)
         item_list = parsed["items"]
 
-        entry_items: DynArray[AssessmentItem] = DynArray[AssessmentItem]()
+        entry_items = []
         for it in item_list:
             entry_items.append(
                 AssessmentItem(
