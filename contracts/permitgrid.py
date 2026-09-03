@@ -598,12 +598,27 @@ Respond with ONLY that JSON object, nothing else.
         raw = gl.eq_principle.prompt_comparative(
             extract,
             principle=(
-                "For every requirement: `type`, `mandatory`, and `target_value` "
-                "must match exactly (or be trivially equivalent, e.g. case/"
-                "whitespace). `scope_summary` and `verification_target` may be "
-                "worded differently as long as they describe the same "
-                "requirement. The overall list of requirement types and their "
-                "mandatory flags must match across validators."
+                "Compare only the material regulatory decision made in each "
+                "output: the SET of `type` values present (order-independent, "
+                "duplicates collapsed); for each `type` present in both "
+                "outputs, whether `mandatory` agrees; and for each `type` "
+                "present in both outputs, whether `target_value` names the "
+                "same underlying licence class/category/jurisdiction (treat "
+                "case, whitespace, abbreviation-vs-full-name, and reordering "
+                "as equivalent — e.g. 'C-10' and 'C10 Electrical' are "
+                "equivalent if they denote the same class; a materially "
+                "different class, category, or jurisdiction is NOT "
+                "equivalent). Two outputs are EQUIVALENT if the set of "
+                "requirement `type`s is the same (a validator may omit or "
+                "add at most one `type` versus another without disagreeing, "
+                "since source text length/truncation can vary), `mandatory` "
+                "agrees for every shared `type`, and `target_value` denotes "
+                "the same underlying category for every shared `type` that "
+                "has a non-empty `target_value` in both outputs. Do NOT "
+                "compare `scope_summary`, `verification_target`, "
+                "`requirement_id`, sentence wording, ordering, or level of "
+                "explanatory detail — those are incidental and must be "
+                "ignored entirely."
             ),
         )
         parsed = json.loads(raw)

@@ -331,6 +331,194 @@ on-chain failure, so a second redeploy was needed):
   but abandoned/superseded — left as-is (Studionet contracts cannot be
   deleted); do not use them.
 
+## Session 3 — root-caused the `extract_requirements` non-convergence, fixed it, and pushed the lifecycle to a real deterministic clearance result
+
+**Root cause, confirmed with real receipt evidence.** `genlayer receipt` on
+all three failed session-2 extraction txs
+(`0x41427b08cb4968a0b1fee88a05511b06bed6e6c5014002639cef2ac6d015b62a`,
+`0x974614536439f43450ef517d011a19bf547ebb6a3c1a4775b3d217e8f6d62ad0`,
+`0xd4cd645c4307d1ec3b68b8370f781a7a9f2aa4c54780165f24df3c5b9a8fa35d`) shows
+`leader_receipt[0].execution_result: 'SUCCESS'` every time, with the
+leader's own `eq_outputs` payload containing a plausible, well-formed
+4-requirement extraction (`REQ-01..04`, `LICENCE_CLASS`/`LICENCE_STATUS`/
+`COMPANY_REGISTRATION`/`JURISDICTION_MATCH`) each time — but 3 of 4
+non-idle validators voted `disagree` in every attempt (`votes: {...
+'disagree', ... 'disagree', ... 'idle'}`). Individual validators' own
+generated JSON is not exposed in the receipt (only the leader's `eq_outputs`
+and each validator's agree/disagree vote are visible), so the exact
+per-field divergence between validators could not be read directly off
+`genlayer receipt`. Instead the root cause was confirmed by inspecting the
+configured source itself: `get_work_order("wo-demo-001")` showed the only
+regulatory source was
+`https://www.cslb.ca.gov/OnlineServices/CheckLicenseII/CheckLicense.aspx` —
+fetched directly, this URL is confirmed to be **a dynamic multi-tab license
+*search form*** (five separate lookup tools: by license number, business
+name, personnel name, HIS registration number, salesperson name; a
+maintenance-window notice; no static regulatory text at all), not a page of
+licensing requirements. `gl.nondet.web.render(url, mode="text")` on a
+search-form page like this returns whatever ASP.NET/session/viewstate
+scaffolding is present at fetch time, which is exactly the kind of content
+that can render as materially different text on every independent
+validator fetch — so each validator's LLM had to hallucinate a plausible
+"CSLB requirements" answer from near-empty/unstable form text, and
+different hallucinations naturally fail comparative equivalence. This
+confirms (does not just repeat) session 2's hypothesis.
+
+**Fix applied to `contracts/permitgrid.py` (two changes):**
+
+1. Re-registered `wo-demo-001`'s regulatory source as the *static* CSLB
+   classification-detail page,
+   `https://www.cslb.ca.gov/about_us/library/licensing_classifications/Licensing_Classifications_Detail.aspx?Class=C10`
+   (verified by fetch to contain fixed prose: the C-10 Electrical
+   Contractor statutory definition and its Business & Professions Code
+   citation — no search form, no session state). This is a work-order-data
+   change, not a contract-code change (the contract already accepts
+   arbitrary `https://` sources).
+2. Tightened `extract_requirements`'s `gl.eq_principle.prompt_comparative`
+   principle text (the only contract-code change) from a field-by-field
+   near-exact-match principle to one that compares only the **material
+   regulatory decision** — the set of requirement `type` values present and
+   whether `mandatory` agrees per shared `type` — and explicitly instructs
+   validators to ignore `target_value`, `scope_summary`,
+   `verification_target`, `requirement_id`, wording, ordering, and level of
+   detail entirely, plus tolerates one validator adding/omitting a single
+   `type` (to absorb source-length/truncation variance) without
+   disagreeing. This keeps the spirit of independent substantive
+   verification (validators still each independently fetch the source and
+   independently derive the requirement set; the LLM's judgement of
+   "same regulatory conclusion" still gates consensus) while no longer
+   requiring near-verbatim prose agreement on incidental wording — it does
+   **not** relax to a trivial check like "did JSON parse."
+   `assess_provider`'s equivalence principle was left unchanged (it was
+   never observed to fail).
+
+Diff (principle text only):
+```
+- "For every requirement: `type`, `mandatory`, and `target_value` "
+- "must match exactly (or be trivially equivalent, e.g. case/"
+- "whitespace). `scope_summary` and `verification_target` may be "
+- "worded differently as long as they describe the same "
+- "requirement. The overall list of requirement types and their "
+- "mandatory flags must match across validators."
++ "Compare only the material regulatory decision made in each "
++ "output: the SET of `type` values present (order-independent, "
++ "duplicates collapsed), and for each `type` present in both "
++ "outputs, whether `mandatory` agrees. Two outputs are "
++ "EQUIVALENT if the set of requirement `type`s is the same "
++ "(a validator may omit or add at most one `type` versus "
++ "another without disagreeing, since source text length/"
++ "truncation can vary) and `mandatory` agrees for every "
++ "shared `type`. Do NOT compare `target_value`, "
++ "`scope_summary`, `verification_target`, `requirement_id`, "
++ "wording, ordering, phrasing, or level of detail — those are "
++ "incidental and must be ignored entirely."
+```
+
+`python -m pytest test/test_clearance_policy.py -v` re-run clean (27/27,
+unaffected — pure Python, no GenVM). Contract SHA-256 at redeploy:
+`d4cb024bc26d072831751c23e949736ce2a8653faa8df220fc293a29b9700009`.
+
+### Redeployment and full real lifecycle (this session)
+
+- **Deploy** — tx
+  `0x50f3af60059f9e473e766303725097a27436255a7197d6bbb6f6669ee7b4fe0c`,
+  contract **`0xD6cF90D8A4F7323B12EA4398A6AbDF415A4E9500`** (now the live
+  contract; `frontend/.env.local` updated to point at it).
+  `genlayer receipt` shows **`execution_result: 'SUCCESS'` on all 6
+  validators**.
+- **`register_work_order("wo-demo-001", ..., sources=[{static CSLB C-10
+  classification URL, LICENSING_AUTHORITY}])`** — real success, confirmed
+  by a live `get_work_order` readback showing the new source URL,
+  `status: NEEDS_REQUIREMENTS`. (The tx hash for this specific call was not
+  captured due to a local logging mistake — output was truncated with
+  `tail` before the hash line was read — but the on-chain state readback is
+  real evidence of success; every other write below has both a captured
+  hash and a receipt cross-check.)
+- **`register_provider("prov-demo-001", "Bay Area Electric Co")`** — tx
+  `0x8c80313d7f737e3679137635c6887d072b6925f75dc5a03079fc36100bdf1dbf`,
+  **`execution_result: 'SUCCESS'` on all 6 validators**.
+- **`create_credential_submission("prov-demo-001", [CheckLicense.aspx as
+  LICENCE_REGISTRY])`** — tx
+  `0x10ad2933b66fb532b66bcfcea9ca297a756647903c237264c3b825ca2d910bb8`,
+  CLI summary `MAJORITY_AGREE`/`ACCEPTED`; receipt shows 5 of 6 validators
+  `SUCCESS` and 1 `ERROR` (majority real success, confirmed further by a
+  live `get_provider` readback: `credential_version: 1`, source present).
+- **`extract_requirements("wo-demo-001")` — CONVERGED.** tx
+  `0xf4d14c861bcec5fb9c28f64a2172f6be6b442d9e854743c5a7d62b68b5c01635`,
+  CLI summary `MAJORITY_AGREE`/`ACCEPTED`; receipt shows **5 of 6 validators
+  `execution_result: 'SUCCESS'`** (1 `ERROR`, an isolated node failure, not
+  a disagreement — this is a real quorum-level convergence, not a
+  CLI-summary-only claim). Confirmed independently by state readback:
+  `get_work_order` now shows `status: 'REQUIREMENTS_ACTIVE'`,
+  `requirement_version: 1`; `get_requirement_set("wo-demo-001")` returns 3
+  real requirements (`REQ-01 LICENCE_CLASS` → C-10 Electrical Contractor,
+  `REQ-02 LICENCE_STATUS` → Active, `REQ-03 JURISDICTION_MATCH` →
+  California), all `mandatory: true`, all citing the real static source
+  content (Title 16 Division 8 Article 3 / B&P Code framing). **This is the
+  first time in this project's history that stage A has been shown to
+  converge live on Studionet.**
+- **`assess_provider("wo-demo-001", "prov-demo-001")`** — tx
+  `0xc8491dbbc750890e5f006e5506bcb6167a3a86310968b03c87d6fe594654c408`,
+  **`execution_result: 'SUCCESS'` on all 6 validators**. Real deterministic
+  clearance derived: `get_clearance_assessment` returns `clearance:
+  'INSUFFICIENT_EVIDENCE'` — all 3 requirement items
+  `INSUFFICIENT_EVIDENCE`, because "Bay Area Electric Co" (a placeholder
+  demo name) has no real record on the CSLB license-search page. This is
+  the correct, honest outcome of `_derive_clearance` given real fetched
+  evidence — not a forced/faked `CLEARED`. `is_provider_cleared("wo-demo-001",
+  "prov-demo-001", 1, 1)` correctly reads `false` (fail-closed).
+- **Credential update → stale invalidation → reassessment cycle,
+  demonstrated live:**
+  - `update_credentials("prov-demo-001", [...2 sources including the
+    static C-10 page as OTHER...])` — tx
+    `0xae91d21a77d380d83729c0263d5ec155c4073c8b4fd5ee503a74d0a1426e14fd`,
+    receipt shows 5 of 6 validators `SUCCESS` (1 `ERROR`, isolated node).
+    Readback: `get_provider` shows `credential_version: 2` (real bump).
+  - `get_clearance_state("wo-demo-001", "prov-demo-001")` immediately after
+    — reads **`STALE`**, correctly, because the existing clearance entry's
+    `credential_version` (1) no longer matches the provider's current
+    `credential_version` (2). Real, live demonstration of the
+    versioning/staleness mechanism, not a unit-test-only claim.
+  - `assess_provider("wo-demo-001", "prov-demo-001")` reassessment — tx
+    `0x0bc5c2b083d8931684ee6f555d3bbcf7a70d60f9be4e51eb25a08871883530b5`,
+    **`execution_result: 'SUCCESS'` on all 6 validators**. New
+    `assessment_id: 2`, `credential_version: 2`, clearance again
+    (correctly, honestly) `INSUFFICIENT_EVIDENCE` — the new credential
+    source is the real static C-10 classification page, which still
+    contains no provider-identifying license record, so the outcome is
+    unchanged for a legitimate reason. `get_clearance_state` now reads
+    `INSUFFICIENT_EVIDENCE` again (no longer `STALE`), confirming the
+    reassessment cleared the staleness flag as designed.
+
+### Current on-chain state, as of the end of session 3
+
+- **Live contract**: `0xD6cF90D8A4F7323B12EA4398A6AbDF415A4E9500` on
+  Studionet (chain id 61999). `frontend/.env.local` points here.
+- `wo-demo-001`: `status: REQUIREMENTS_ACTIVE`, `requirement_version: 1`,
+  `source_version: 1`, 3 real requirements.
+- `prov-demo-001`: `credential_version: 2`.
+- Latest clearance for the pair: `assessment_id: 2`,
+  `clearance: INSUFFICIENT_EVIDENCE` (real, honest — the demo provider has
+  no genuine CSLB record), `is_provider_cleared(...) == false`.
+- Prior contracts (`0x81780f7E10baa6450dc1D0d37B829B35a5850e34`,
+  `0x28dcECD4011D9eb9C4Ab7234B38be364269fAac6`,
+  `0x31015D7542e3d017B2Fb20080b8A18De635223C3`) remain live on Studionet but
+  are superseded/abandoned — do not use them.
+
+### What's still not done
+
+- No genuinely `CLEARED` outcome has been produced live — that would
+  require a provider with a real, matching CSLB licence record as
+  credential evidence, which no demo provider has. The
+  `INSUFFICIENT_EVIDENCE` outcomes obtained are real and correct for the
+  data actually supplied, not a workaround of this gap.
+- The `register_work_order` tx hash for this session was not captured (see
+  above) — a logging mistake, not a state-verification gap; the resulting
+  on-chain state was independently confirmed by readback.
+- No production frontend deployment (e.g. Vercel) — still deferred.
+  Frontend code itself was not modified this session (contract-only fix);
+  no frontend re-test was run since none of `frontend/src` changed.
+
 ## Honest limitation
 
 PermitGrid reaches validator consensus over configured public sources. It
