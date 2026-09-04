@@ -131,7 +131,11 @@ export default function WorkOrderDetailPage({ params }: { params: Promise<{ id: 
             {extracting ? "Extracting…" : "Extract / rebuild requirements"}
           </button>
         ) : (
-          <span className="text-xs text-ink-muted">Connect a wallet to extract requirements.</span>
+          <span className="text-xs text-ink-muted">
+            {requirementSet
+              ? "Connect wallet to rebuild requirements."
+              : "Connect a wallet to extract requirements."}
+          </span>
         )}
       </div>
 

@@ -1,10 +1,11 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { use, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useWallet } from "@/lib/wallet";
 import { contractReads } from "@/lib/contract";
 import { isContractConfigured } from "@/lib/config";
+import { NotFoundError, ReadError } from "@/lib/readClient";
 import type { WorkOrder, Provider, RequirementSet, ClearanceAssessment } from "@/lib/types";
 import PermitHeader from "@/components/PermitHeader";
 import RequirementSheet from "@/components/RequirementSheet";
@@ -22,29 +23,31 @@ export default function ProviderWorkDetailPage({
   const [provider, setProvider] = useState<Provider | null>(null);
   const [requirementSet, setRequirementSet] = useState<RequirementSet | null>(null);
   const [assessment, setAssessment] = useState<ClearanceAssessment | null>(null);
+  // Distinct from "no assessment exists": a genuine RPC/read failure while
+  // fetching the assessment. Must never be silently converted into
+  // assessmentNotFound=true (the bug this fixes — see HANDOFF.md).
+  const [assessmentReadError, setAssessmentReadError] = useState<ReadError | null>(null);
+  const [assessmentNotFound, setAssessmentNotFound] = useState(false);
   const [staleReason, setStaleReason] = useState<string | null>(null);
   const [loading, setLoading] = useState(() => isContractConfigured());
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     if (!isContractConfigured()) {
-      return;
+      return () => undefined;
     }
     let cancelled = false;
 
-    Promise.resolve()
-      .then(() => {
-        if (cancelled) return null;
-        setLoading(true);
-        setLoadError(null);
-        return Promise.all([
-          contractReads.getWorkOrder(readClient, workId),
-          contractReads.getProvider(readClient, providerId),
-        ]);
-      })
-      .then(async (pair) => {
-        if (cancelled || !pair) return;
-        const [wo, prov] = pair;
+    setLoading(true);
+    setLoadError(null);
+    setAssessmentReadError(null);
+    setAssessmentNotFound(false);
+
+    Promise.all([
+      contractReads.getWorkOrder(readClient, workId),
+      contractReads.getProvider(readClient, providerId),
+    ])
+      .then(async ([wo, prov]) => {
         if (cancelled) return;
         setWorkOrder(wo);
         setProvider(prov);
@@ -54,7 +57,21 @@ export default function ProviderWorkDetailPage({
         if (cancelled) return;
         setRequirementSet(rs);
 
-        const a = await contractReads.getClearanceAssessment(readClient, workId, providerId, 0).catch(() => null);
+        let a: ClearanceAssessment | null = null;
+        try {
+          a = await contractReads.getClearanceAssessment(readClient, workId, providerId, 0);
+        } catch (err) {
+          if (cancelled) return;
+          if (err instanceof NotFoundError) {
+            // A genuine, legitimate "no assessment has ever run" — distinct
+            // from a failed read. Render the neutral empty state.
+            setAssessmentNotFound(true);
+          } else {
+            // RPC unreachable / timeout / malformed / unknown — a real
+            // failure, must be shown as retryable, never as "no assessment".
+            setAssessmentReadError(err instanceof ReadError ? err : new ReadError(String(err), "UNKNOWN", true, err));
+          }
+        }
         if (cancelled) return;
         setAssessment(a);
 
@@ -79,6 +96,14 @@ export default function ProviderWorkDetailPage({
       cancelled = true;
     };
   }, [providerId, workId, readClient]);
+
+  useEffect(() => {
+    let cancel: (() => void) | undefined;
+    Promise.resolve().then(() => {
+      cancel = load();
+    });
+    return () => cancel?.();
+  }, [load]);
 
   if (!isContractConfigured()) {
     return (
@@ -125,7 +150,17 @@ export default function ProviderWorkDetailPage({
         </p>
       )}
 
-      {!assessment && (
+      {assessmentReadError && (
+        <p className="pg-card px-4 py-3 text-sm text-red mb-6" role="alert" data-testid="assessment-read-error">
+          Could not read the clearance assessment: {assessmentReadError.message}
+          {" "}
+          <button type="button" className="underline underline-offset-2" onClick={() => load()}>
+            Retry
+          </button>
+        </p>
+      )}
+
+      {assessmentNotFound && !assessment && (
         <p className="pg-card px-4 py-3 text-sm text-ink-muted mb-6" data-testid="no-assessment">
           No assessment on file for this provider against this work order yet.{" "}
           <Link href="/clearance/new" className="underline underline-offset-2">

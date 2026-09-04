@@ -1,15 +1,25 @@
-import { TX_STEPS_ORDER, type TxStep } from "@/lib/txFlow";
+import { EXPLORER_URL } from "@/lib/config";
+import { TX_FAILURE_STEPS, TX_STEPS_ORDER, type TxStep } from "@/lib/txFlow";
 
 const STEP_LABEL: Record<TxStep, string> = {
   IDLE: "",
+  WALLET_REQUEST: "WALLET REQUEST",
   SUBMITTING: "SUBMITTING",
+  SUBMITTED: "SUBMITTED",
   LEADER_EXECUTION: "LEADER EXECUTION",
   VALIDATOR_REVIEW: "VALIDATOR REVIEW",
   CONSENSUS: "CONSENSUS",
+  FINALIZING: "FINALIZING",
   FINALISED: "FINALISED",
+  EXECUTION_VERIFIED: "EXECUTION VERIFIED",
   CANONICAL_READBACK: "CANONICAL READBACK",
   UPDATED: "UPDATED",
   ERROR: "FAILED",
+  WALLET_REJECTED: "WALLET REJECTED",
+  EXECUTION_REVERTED: "EXECUTION REVERTED",
+  CONSENSUS_NON_CONVERGENCE: "CONSENSUS DID NOT CONVERGE",
+  RPC_ERROR: "RPC ERROR",
+  FINALITY_TIMEOUT: "FINALITY TIMEOUT",
   READBACK_MISMATCH: "READBACK MISMATCH",
 };
 
@@ -21,7 +31,7 @@ interface TxProgressProps {
 
 export default function TxProgress({ step, hash, errorMessage }: TxProgressProps) {
   if (step === "IDLE") return null;
-  const isError = step === "ERROR" || step === "READBACK_MISMATCH";
+  const isError = (TX_FAILURE_STEPS as readonly TxStep[]).includes(step);
   const currentIdx = TX_STEPS_ORDER.indexOf(step);
 
   return (
@@ -48,7 +58,18 @@ export default function TxProgress({ step, hash, errorMessage }: TxProgressProps
         })}
       </ol>
       {hash && (
-        <div className="font-ident text-xs text-ink-muted mt-2 break-all">TX {hash}</div>
+        <div className="font-ident text-xs text-ink-muted mt-2 break-all">
+          TX {hash}
+          {" "}
+          <a
+            className="underline underline-offset-2"
+            href={`${EXPLORER_URL}/tx/${hash}`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            View on explorer →
+          </a>
+        </div>
       )}
       {isError && (
         <div className="text-sm text-red mt-2" role="alert" data-testid="tx-error">
