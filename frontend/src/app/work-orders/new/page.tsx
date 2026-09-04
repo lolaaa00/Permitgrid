@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { useWallet } from "@/lib/wallet";
 import { contractWrites } from "@/lib/contract";
+import { isContractConfigured } from "@/lib/config";
 import { SOURCE_ROLES } from "@/lib/types";
 import type { RegSource } from "@/lib/types";
 import type { TxStep } from "@/lib/txFlow";
@@ -29,7 +30,10 @@ export default function NewWorkOrderPage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  const configured = isContractConfigured();
+
   const canSubmit =
+    configured &&
     status === "connected" &&
     !!writeClient &&
     !!address &&
@@ -45,7 +49,7 @@ export default function NewWorkOrderPage() {
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!writeClient || !address) return;
+    if (!configured || !writeClient || !address) return;
     setSubmitting(true);
     setErrorMessage(null);
     try {
@@ -79,7 +83,14 @@ export default function NewWorkOrderPage() {
     <div className="max-w-2xl">
       <h1 className="font-ident text-xl font-bold uppercase mb-4">New Work Order</h1>
 
-      {status !== "connected" && (
+      {!configured && (
+        <p className="pg-card px-4 py-3 text-sm text-red mb-4" role="alert" data-testid="config-error">
+          CONFIGURATION_ERROR — no valid contract address is configured. Writes are disabled until
+          this is fixed. See the About page for the resolved configuration.
+        </p>
+      )}
+
+      {configured && status !== "connected" && (
         <p className="pg-card px-4 py-3 text-sm text-amber mb-4" role="status">
           Connect a wallet on GenLayer (chain 61999) to register a work order.
         </p>
