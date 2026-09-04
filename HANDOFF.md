@@ -600,6 +600,24 @@ unaffected — pure Python, no GenVM). Contract SHA-256 at redeploy:
   `INSUFFICIENT_EVIDENCE` remains the only real outcome shown to date;
   that is itself the correct proof point for the fail-closed gate.
 
+## Session 5 — real production deployment, as a genuinely new Vercel project
+
+**Deployed for real this time, safely isolated from the pre-existing `frontend`/Vertex project.** Before touching Vercel, `vercel project ls` (both pages) was checked for every existing project name in the `lolaas-projects` account — `permitgrid` was not among them (existing names include `frontend` (Vertex), `benchseal`, `web`, `specweave`, `carbontrust`, `watchtower2`, `genlayer-oracle`, etc. — 35 total, none colliding).
+
+- `vercel link --yes --project permitgrid` was run from `frontend/` (no `.vercel/` link existed yet). This **created a brand-new project** `lolaas-projects/permitgrid` (`prj_fNjUkOt55PKxGkNtTkVOKKqBfCIU`) rather than auto-matching any existing project by directory name — confirmed by the CLI's own `✓ Created lolaas-projects/permitgrid` output and by `.vercel/project.json` showing `"projectName":"permitgrid"`.
+- Environment variables set on the new project via `vercel env add ... production`:
+  - `NEXT_PUBLIC_CONTRACT_ADDRESS` = `0xD6cF90D8A4F7323B12EA4398A6AbDF415A4E9500`
+  - `NEXT_PUBLIC_RPC_URL` = `https://studio.genlayer.com/api`
+- `vercel deploy --prod --yes` from `frontend/` built and deployed cleanly (Next.js 16.3.4/Turbopack, all 8 routes, no errors) to project `permitgrid`. Deployment id `dpl_3cDRTnm8bbATGmRtiP5XNPL9X7kA`, aliased production URL:
+
+  **https://permitgrid-one.vercel.app**
+
+- **Verified the deployed page is really PermitGrid**: fetched the production URL directly and confirmed `<title>PermitGrid</title>`, header `PERMITGRID` with the real nav (`REGISTER`, `NEW WORK ORDER`, `NEW PROVIDER`, `NEW CLEARANCE`, `ABOUT`), and the home page's `Work Order Register` heading — not an error page, not the Vertex app.
+- **Verified Vertex/`frontend` project was NOT touched**: `vercel inspect ver-tex.vercel.app` shows its production deployment is still `dpl_3TNvkgEwt2HtffVvBnCHySHvJKXq` ("frontend", created Aug 10 2026 — the same pre-incident deployment recorded in session 4), with the same aliases (`ver-tex.vercel.app`, `frontend-lolaas-projects.vercel.app`, `frontend-lolaaa00-lolaas-projects.vercel.app`). No new deployment from this session appears in its history.
+- `frontend/.vercel/` remains gitignored and was not committed.
+
+**Net result: PermitGrid now has a real, live, correctly-isolated production deployment at https://permitgrid-one.vercel.app, pointed at the live Studionet contract `0xD6cF90D8A4F7323B12EA4398A6AbDF415A4E9500`.**
+
 ## Honest limitation
 
 PermitGrid reaches validator consensus over configured public sources. It
