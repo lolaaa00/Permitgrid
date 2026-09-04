@@ -1,6 +1,6 @@
 import { createClient } from "genlayer-js";
 import type { Address } from "genlayer-js/types";
-import { CHAIN_ID, CHAIN_NAME, CHAIN_CURRENCY, RPC_URL, EXPLORER_URL, CONTRACT_ADDRESS } from "./config";
+import { CHAIN_ID, CHAIN_NAME, CHAIN_CURRENCY, RPC_URL, EXPLORER_URL, requireContractAddress } from "./config";
 
 // A minimal EIP-1193 provider shape — we don't want a hard dependency on any
 // particular injected-wallet typing here.
@@ -36,6 +36,11 @@ export function getWriteClient(provider: Eip1193Provider, account: Address) {
   });
 }
 
+/** Structural guard: throws `ConfigurationError` (see config.ts) rather than
+ * returning a bad value, so an empty/undefined/malformed address can never
+ * reach `writeContract`/`readContract` — this is what makes the
+ * `Address "undefined" is invalid` failure mode structurally impossible
+ * instead of merely UI-warned-about. */
 export function contractAddress(): Address {
-  return CONTRACT_ADDRESS as Address;
+  return requireContractAddress() as Address;
 }
