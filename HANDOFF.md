@@ -1043,3 +1043,136 @@ shows that comparative-equivalence consensus (`extract_requirements`) can
 genuinely fail to converge against a real dynamic government web page —
 that is a property of the demo source and the NLP equivalence principle,
 not a simulated or invented failure.
+
+## Session 8 — production "Address undefined" bug audit, structural config guard
+
+**Trigger:** user report of a real browser session where "Register work
+order" threw `Address "undefined" is invalid` instead of opening Rabby.
+
+**Investigation, not assumption:**
+- Confirmed via `vercel env ls production` on the `permitgrid` project
+  that `NEXT_PUBLIC_CONTRACT_ADDRESS` and `NEXT_PUBLIC_RPC_URL` are both
+  set for Production (unchanged since session 5/7).
+- Fetched every JS chunk actually served by the live production site
+  (`https://permitgrid-one.vercel.app/work-orders/new`) before touching
+  anything and confirmed the real deployed value
+  `0xD6cF90D8A4F7323B12EA4398A6AbDF415A4E9500` was already correctly
+  inlined at build time — so at the moment of this session's check, the
+  live bundle was NOT actually serving an unset address. The user's bug
+  report therefore most plausibly reflects either an earlier (pre-session-7)
+  deployment or a stale cached bundle in their browser, not a currently-live
+  config gap — but see the real code gap found below, which was a real
+  latent bug regardless of which deployment the user hit.
+- **Real root cause found by code audit:** `isContractConfigured()` in
+  `frontend/src/lib/config.ts` only checked `CONTRACT_ADDRESS.length > 0`
+  — not that it's a valid 20-byte hex address. Worse, two of the four
+  write pages, `frontend/src/app/work-orders/new/page.tsx` and
+  `frontend/src/app/providers/new/page.tsx`, never called
+  `isContractConfigured()` at all — `canSubmit`/`onSubmit` had no
+  config guard whatsoever, unlike `clearance/new` and `work-order/[id]`
+  which did. If a build ever shipped with an unset/malformed address
+  (e.g. an env var scoped to the wrong Vercel target, or a build
+  triggered before env vars were saved), these two pages would let the
+  user click submit, `contractAddress()` would return an empty string
+  cast as `Address`, and that value would reach `writeContract` inside
+  `contract.ts`/`genlayerClient.ts`, throwing deep inside the wallet
+  write path with a confusing low-level error instead of a clear
+  config message — exactly matching the reported symptom.
+
+**Fixes made** (`frontend/src/lib/config.ts`,
+`frontend/src/lib/genlayerClient.ts`,
+`frontend/src/app/work-orders/new/page.tsx`,
+`frontend/src/app/providers/new/page.tsx`,
+`frontend/src/app/about/page.tsx`):
+- `config.ts`: added `isValidContractAddress()` (real `/^0x[0-9a-fA-F]{40}$/`
+  check), rewired `isContractConfigured()` to use it, and added
+  `requireContractAddress()` / `ConfigurationError` — throws instead of
+  returning a bad value.
+- `genlayerClient.ts`: `contractAddress()` now calls
+  `requireContractAddress()` instead of casting `CONTRACT_ADDRESS`
+  directly — this is the structural guard: an invalid address can no
+  longer reach `writeContract`/`readContract` under any code path, not
+  just the two pages that happened to check `isContractConfigured()`
+  before this session.
+- `work-orders/new` and `providers/new`: added the same
+  `isContractConfigured()` gate the other two write pages already had —
+  `canSubmit` now requires it, `onSubmit` bails early if not configured,
+  and a visible `CONFIGURATION_ERROR` banner (`data-testid="config-error"`)
+  replaces the connect-wallet prompt when unconfigured.
+- `about/page.tsx`: added a "Diagnostics — resolved configuration"
+  section (`data-testid="diagnostics-config"`) showing the actual
+  build-resolved `CONTRACT_ADDRESS`, whether it's valid, `RPC_URL`,
+  `CHAIN_ID`/hex, and `EXPLORER_URL` — inspectable by anyone without
+  devtools.
+- `frontend/src/lib/config.test.ts` (new, 7 tests): direct coverage of
+  `isValidContractAddress` for the real address, empty string, literal
+  `"undefined"`/`"null"` strings, too-short hex, missing `0x` prefix, and
+  non-hex characters.
+
+**Transaction state machine (Parts 3-9 of this session's task):** re-read
+`frontend/src/lib/txFlow.ts` and `frontend/src/components/TxProgress.tsx`
+in full against the "false progression through FINALISED with no real
+signature" part of the report. As currently written (already the state
+from session 7, not changed further this session), the flow is
+evidence-driven: `WALLET_REQUEST`/`SUBMITTING` are emitted only
+immediately before/during the real `submit()` call, `SUBMITTED` only
+after a real hash exists, every later step is driven off polling
+`handle.getStatus()`/`getExecutionResult()` against the real SDK, and
+`TxProgress.tsx` marks a step "done" only via `TX_STEPS_ORDER.indexOf`
+of the actual current step — there is no code path in the current
+`main` that marks future stages complete without real evidence. No
+bug matching the "faked progression all the way to CANONICAL READBACK
+with no signature" description could be reproduced by code audit. This
+session's best-supported conclusion is that the report describes a
+pre-session-7 deployment or client-side caching, not the code now on
+`main` — recorded honestly rather than claiming the state machine was
+newly fixed when the audit found it already correct.
+
+**Live wallet testing — NOT REACHED.**
+`list_connected_browsers` (claude-in-chrome MCP) returned `[]` — no
+Chrome browser is connected to this environment at all, so there is no
+way to check for a Rabby extension, let alone drive one. Parts 10 and 11
+of the task (reject a real Rabby popup, approve a real Rabby popup,
+capture a real tx hash from a wallet-driven submission, and the full
+downstream lifecycle through wallet-driven credential/assessment/
+reassessment flows) could not be attempted and are **not claimed**.
+Everything provable without a browser wallet was verified instead:
+`npx tsc --noEmit` clean, `npx eslint .` clean, `npx vitest run` — 8
+test files, 48 tests, all passed (up from 7 files/41 tests) — and
+`npx next build` — all 8 routes compiled, Turbopack, no errors.
+
+**Production redeploy:** `vercel deploy --prod --yes` from `frontend/` —
+new deployment `dpl_DGHnVvp2K586v9sVEPz9EfkDJk8m`, aliased to
+`https://permitgrid-one.vercel.app`. Confirmed post-deploy via `curl` that
+the live `/about` page now serves the new diagnostics block showing
+`CONTRACT_ADDRESS: 0xD6cF90D8A4F7323B12EA4398A6AbDF415A4E9500`,
+`Address valid: yes`. Commit for this session:
+`20005068c61c41aa50adaacea2612298a822dc96`. Contract itself
+(`0xD6cF90D8A4F7323B12EA4398A6AbDF415A4E9500`) was not touched — frontend-
+only changes, consistent with every prior session's parity check.
+
+### What's still not done / honest limitations of this session
+
+- **No live Rabby/browser-wallet evidence at all this session** — not
+  even the mock-provider-only fallback used in prior sessions was
+  re-exercised for new scenarios (existing `wallet.test.tsx` mocks were
+  not extended). The full wallet-driven rejection/approval/lifecycle
+  matrix from the task (Parts 5, 9, 10, 11) remains **NOT REACHED**, same
+  as every prior session, for the same reason: no real wallet extension
+  is available in this environment, and no Chrome browser is even
+  connected via claude-in-chrome this session.
+- **Controlled fixtures for `MAJORITY_DISAGREE`/`UNDETERMINED`/generic
+  `ERROR` consensus outcomes were not added this session** — the existing
+  `txFlow.test.ts` regression coverage (execution-revert-despite-finality,
+  `NOT_VOTED`) was not extended with new fixtures for every named
+  scenario in Part 9 of the task (MAJORITY_AGREE, MAJORITY_DISAGREE,
+  UNDETERMINED, canonical-readback-mismatch-as-distinct-case, retry-
+  after-wallet-rejection, stale-then-refreshed-assessment-as-a-component
+  test). This session prioritized the confirmed root cause (missing
+  config guard) and its regression coverage over broadening the txFlow
+  test matrix further; recorded as a real, scoped-down gap rather than
+  claimed complete.
+- Could not confirm or deny whether the user's original report came from
+  a stale cached bundle vs. a genuinely older deployment — no server-side
+  logging/analytics was available to check which deployment their browser
+  was actually pointed at when the bug occurred.
