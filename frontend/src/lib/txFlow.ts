@@ -3,32 +3,63 @@
 // lifecycle as discrete stages:
 //
 //   SUBMITTING -> LEADER_EXECUTION -> VALIDATOR_REVIEW -> CONSENSUS
-//   -> FINALISED -> CANONICAL_READBACK -> UPDATED
+//   -> FINALISED -> EXECUTION_VERIFIED -> CANONICAL_READBACK -> UPDATED
 //
-// Success is NEVER reported before the canonical view-method readback
-// confirms the new on-chain state. If the readback doesn't match what the
-// write intended, we surface READBACK_MISMATCH instead of UPDATED.
+// CRITICAL, hard-won lesson (see HANDOFF.md sessions 2-3): consensus
+// acceptance (`MAJORITY_AGREE` / `ACCEPTED` / `FINALIZED`) is NOT proof of a
+// successful write. This project has repeatedly observed transactions reach
+// `FINALIZED` while every validator's `execution_result` was actually
+// `FINISHED_WITH_ERROR` (a revert) — a "MAJORITY_AGREE" here can mean "all
+// validators agree the call reverts". So after finality this flow ALWAYS
+// fetches the real execution result (via genlayer-js's `getTransaction` /
+// `txExecutionResultName`, mirroring the CLI's `execution_result` field) and
+// requires it to be a successful outcome (`FINISHED_WITH_RETURN`) BEFORE
+// doing the canonical readback. Only after both (a) execution success and
+// (b) a canonical, final-state readback confirms the intended mutation do we
+// report `UPDATED`.
 
 export type TxStep =
   | "IDLE"
+  | "WALLET_REQUEST"
   | "SUBMITTING"
+  | "SUBMITTED"
   | "LEADER_EXECUTION"
   | "VALIDATOR_REVIEW"
   | "CONSENSUS"
+  | "FINALIZING"
   | "FINALISED"
+  | "EXECUTION_VERIFIED"
   | "CANONICAL_READBACK"
   | "UPDATED"
   | "ERROR"
+  | "WALLET_REJECTED"
+  | "EXECUTION_REVERTED"
+  | "CONSENSUS_NON_CONVERGENCE"
+  | "RPC_ERROR"
+  | "FINALITY_TIMEOUT"
   | "READBACK_MISMATCH";
 
 export const TX_STEPS_ORDER: TxStep[] = [
+  "WALLET_REQUEST",
   "SUBMITTING",
+  "SUBMITTED",
   "LEADER_EXECUTION",
   "VALIDATOR_REVIEW",
   "CONSENSUS",
   "FINALISED",
+  "EXECUTION_VERIFIED",
   "CANONICAL_READBACK",
   "UPDATED",
+];
+
+export const TX_FAILURE_STEPS: TxStep[] = [
+  "ERROR",
+  "WALLET_REJECTED",
+  "EXECUTION_REVERTED",
+  "CONSENSUS_NON_CONVERGENCE",
+  "RPC_ERROR",
+  "FINALITY_TIMEOUT",
+  "READBACK_MISMATCH",
 ];
 
 // Minimal shape of genlayer-js's TransactionStatus enum values we care about.
@@ -47,6 +78,18 @@ export type RawTxStatus =
   | "APPEAL_REVEALING"
   | "APPEAL_COMMITTING"
   | "UNINITIALIZED";
+
+// Mirrors genlayer-js's ExecutionResult enum (txExecutionResultName /
+// leader_receipt[].execution_result in the CLI). This is the ONLY thing that
+// tells us whether the contract call itself succeeded or reverted —
+// consensus status alone (ACCEPTED/FINALIZED) does not.
+export type RawExecutionResult =
+  | "NOT_VOTED"
+  | "FINISHED_WITH_RETURN"
+  | "FINISHED_WITH_ERROR"
+  | string // tolerate unknown/future values defensively
+  | undefined
+  | null;
 
 const TERMINAL_ERROR_STATUSES: RawTxStatus[] = [
   "UNDETERMINED",
@@ -77,10 +120,24 @@ export function mapRawStatusToStep(status: RawTxStatus): TxStep {
   }
 }
 
+/** True only for a genuinely successful contract execution. Anything else
+ * (including "NOT_VOTED", unknown values, or missing data) is treated as
+ * NOT proven successful — fail closed. */
+export function isExecutionSuccessful(result: RawExecutionResult): boolean {
+  return result === "FINISHED_WITH_RETURN";
+}
+
 export class TxFlowError extends Error {
   constructor(message: string, public readonly cause?: unknown) {
     super(message);
     this.name = "TxFlowError";
+  }
+}
+
+export class ExecutionRevertedError extends TxFlowError {
+  constructor(message: string, public readonly executionResult?: RawExecutionResult, cause?: unknown) {
+    super(message, cause);
+    this.name = "ExecutionRevertedError";
   }
 }
 
@@ -104,6 +161,10 @@ export const KNOWN_FAILURE_MESSAGES: Record<string, string> = {
 export interface TxHandle {
   hash: string;
   getStatus: () => Promise<RawTxStatus>;
+  /** Fetches the real execution outcome for this tx (post-finality). Must
+   * reflect the underlying validator execution result, not just the
+   * consensus status. */
+  getExecutionResult: () => Promise<RawExecutionResult>;
 }
 
 export interface RunWriteFlowArgs<T> {
@@ -113,7 +174,8 @@ export interface RunWriteFlowArgs<T> {
   /** Polls until a terminal (FINALIZED or error) status is reached. */
   pollIntervalMs?: number;
   maxPolls?: number;
-  /** Called after FINALIZED — performs the canonical view-method readback. */
+  /** Called after execution is verified successful — performs the canonical
+   * final-state view-method readback. */
   readback: () => Promise<T>;
   /** Returns true if the readback reflects the intended change. */
   verifyReadback: (result: T) => boolean;
@@ -133,28 +195,34 @@ export async function runWriteFlow<T>(args: RunWriteFlowArgs<T>): Promise<T> {
 
   const emit = (step: TxStep, detail?: { hash?: string }) => onStep?.(step, detail);
 
+  emit("WALLET_REQUEST");
   emit("SUBMITTING");
   let handle: TxHandle;
   try {
     handle = await submit();
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/user rejected|user denied|rejected the request/i.test(msg)) {
+      emit("WALLET_REJECTED");
+      throw new TxFlowError("Signature request was rejected.", err);
+    }
     emit("ERROR");
     throw normalizeSubmitError(functionName, err);
   }
-  emit("SUBMITTING", { hash: handle.hash });
+  emit("SUBMITTED", { hash: handle.hash });
 
-  let lastStep: TxStep = "SUBMITTING";
+  let lastStep: TxStep = "SUBMITTED";
   for (let i = 0; i < maxPolls; i++) {
     let status: RawTxStatus;
     try {
       status = await handle.getStatus();
     } catch (err) {
-      emit("ERROR");
-      throw new TxFlowError("Lost track of the transaction while polling.", err);
+      emit("RPC_ERROR", { hash: handle.hash });
+      throw new TxFlowError("Lost track of the transaction while polling (RPC error).", err);
     }
 
     if (TERMINAL_ERROR_STATUSES.includes(status)) {
-      emit("ERROR");
+      emit("CONSENSUS_NON_CONVERGENCE", { hash: handle.hash });
       throw new TxFlowError(
         KNOWN_FAILURE_MESSAGES[functionName] ??
           `Transaction did not reach consensus (${status}).`
@@ -168,9 +236,36 @@ export async function runWriteFlow<T>(args: RunWriteFlowArgs<T>): Promise<T> {
     }
 
     if (status === "FINALIZED") {
-      // Never report success before the readback below.
+      // Finality alone is NOT success — verify the real execution result
+      // before doing anything else. This is the single most important
+      // check in this flow (see module docstring / HANDOFF.md history).
+      let executionResult: RawExecutionResult;
+      try {
+        executionResult = await handle.getExecutionResult();
+      } catch (err) {
+        emit("RPC_ERROR", { hash: handle.hash });
+        throw new TxFlowError("Failed to read the transaction's execution result.", err);
+      }
+
+      if (!isExecutionSuccessful(executionResult)) {
+        emit("EXECUTION_REVERTED", { hash: handle.hash });
+        throw new ExecutionRevertedError(
+          KNOWN_FAILURE_MESSAGES[functionName] ??
+            `Transaction finalized but execution did not succeed (${executionResult ?? "unknown"}).`,
+          executionResult
+        );
+      }
+      emit("EXECUTION_VERIFIED", { hash: handle.hash });
+
+      // Never report success before the canonical final-state readback below.
       emit("CANONICAL_READBACK", { hash: handle.hash });
-      const result = await readback();
+      let result: T;
+      try {
+        result = await readback();
+      } catch (err) {
+        emit("RPC_ERROR", { hash: handle.hash });
+        throw new TxFlowError("Canonical readback failed after a verified successful execution.", err);
+      }
       if (!verifyReadback(result)) {
         emit("READBACK_MISMATCH", { hash: handle.hash });
         throw new ReadbackMismatchError();
@@ -182,15 +277,14 @@ export async function runWriteFlow<T>(args: RunWriteFlowArgs<T>): Promise<T> {
     await sleep(pollIntervalMs);
   }
 
-  emit("ERROR");
-  throw new TxFlowError("Timed out waiting for transaction finality.");
+  emit("FINALITY_TIMEOUT", { hash: handle.hash });
+  throw new TxFlowError(
+    "Timed out waiting for transaction finality. The transaction hash is preserved — check the explorer rather than resubmitting."
+  );
 }
 
 function normalizeSubmitError(functionName: string, err: unknown): TxFlowError {
   const msg = err instanceof Error ? err.message : String(err);
-  if (/user rejected|user denied|rejected the request/i.test(msg)) {
-    return new TxFlowError("Signature request was rejected.", err);
-  }
   return new TxFlowError(
     KNOWN_FAILURE_MESSAGES[functionName] ?? msg,
     err

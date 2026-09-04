@@ -28,11 +28,17 @@ describe("RequirementSheet", () => {
     expect(screen.getByTestId("requirement-sheet-empty")).toBeInTheDocument();
   });
 
-  it("shows PENDING for requirements with no assessment item", () => {
+  it("shows a neutral DEFINED state (not PENDING) for the frozen active requirement set with no items prop at all", () => {
     render(<RequirementSheet requirements={requirements} />);
+    expect(screen.getByTestId("req-row-REQ-01")).toHaveTextContent("DEFINED");
+    expect(screen.getByTestId("req-row-REQ-02")).toHaveTextContent("DEFINED");
+    expect(screen.getByTestId("req-row-REQ-02")).toHaveTextContent("(optional)");
+  });
+
+  it("shows PENDING for a requirement with no matching item once an assessment (items=[]) is in progress/displayed", () => {
+    render(<RequirementSheet requirements={requirements} items={[]} />);
     expect(screen.getByTestId("req-row-REQ-01")).toHaveTextContent("PENDING");
     expect(screen.getByTestId("req-row-REQ-02")).toHaveTextContent("PENDING");
-    expect(screen.getByTestId("req-row-REQ-02")).toHaveTextContent("(optional)");
   });
 
   it("shows the per-requirement assessment result when provided", () => {

@@ -9,13 +9,16 @@ describe("WalletButton", () => {
     delete (window as unknown as { ethereum?: unknown }).ethereum;
   });
 
-  it("shows a clear no-provider state when no injected wallet exists", () => {
+  it("shows a clear no-provider state when no injected wallet exists", async () => {
     render(
       <WalletProvider>
         <WalletButton />
       </WalletProvider>
     );
-    expect(screen.getByRole("status")).toHaveTextContent("No wallet provider found");
+    // Provider discovery is deliberately async (it tolerates late
+    // injection instead of concluding "no provider" from a single
+    // synchronous check), so this settles a tick after mount.
+    expect(await screen.findByRole("status")).toHaveTextContent("No wallet provider found");
   });
 
   it("shows a connect action when a provider exists but is disconnected", async () => {

@@ -9,7 +9,13 @@ export interface RequirementSheetRow {
 
 interface RequirementSheetProps {
   requirements: Requirement[];
-  /** Optional per-requirement assessment items, keyed by requirement_id. */
+  /** Per-requirement assessment items, keyed by requirement_id. Pass this
+   * (even as []) ONLY when displaying an actual provider assessment against
+   * these requirements — its presence, not its length, is what switches the
+   * sheet into "assessment" mode. Omit it entirely (undefined) when showing
+   * the frozen active requirement set on its own (e.g. the work-order page),
+   * so requirements are never mislabeled PENDING/FAIL/etc. before any
+   * assessment has ever run. */
   items?: AssessmentItem[];
 }
 
@@ -24,6 +30,12 @@ const RESULT_STYLE: Record<string, string> = {
 
 /** Signature "requirement sheet" — dense row list, text+colour result state. */
 export default function RequirementSheet({ requirements, items }: RequirementSheetProps) {
+  // Assessment mode is determined by whether `items` was passed at all
+  // (even []), not by its contents — that's the fix for the bug where a
+  // frozen requirement set with no assessment items was mislabeled PENDING
+  // (implying a pending/failed assessment) instead of a neutral defined
+  // state.
+  const hasAssessment = items !== undefined;
   const itemsById = new Map((items ?? []).map((it) => [it.requirement_id, it]));
 
   if (requirements.length === 0) {
@@ -54,7 +66,7 @@ export default function RequirementSheet({ requirements, items }: RequirementShe
             <span
               className={`font-bold shrink-0 ${item ? (RESULT_STYLE[item.result] ?? "text-ink") : "text-ink-muted"}`}
             >
-              {item ? item.result : "PENDING"}
+              {item ? item.result : hasAssessment ? "PENDING" : "DEFINED"}
             </span>
           </li>
         );

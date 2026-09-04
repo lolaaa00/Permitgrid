@@ -11,32 +11,46 @@ import type {
   ClearanceAssessment,
   RegSource,
 } from "./types";
-import { runWriteFlow, type RawTxStatus, type TxStep } from "./txFlow";
+import { runWriteFlow, type RawExecutionResult, type RawTxStatus, type TxStep } from "./txFlow";
+import { readWithErrorHandling } from "./readClient";
 
 type ReadClient = ReturnType<typeof getReadClient>;
 type WriteClient = ReturnType<typeof getWriteClient>;
 
-async function view<T>(client: ReadClient, functionName: string, args: unknown[] = []): Promise<T> {
-  return client.readContract({
-    address: contractAddress(),
-    functionName,
-    args: args as never,
-  }) as Promise<T>;
+/** Every read goes through readWithErrorHandling, which distinguishes RPC
+ * failure from genuine empty/not-found results and applies bounded
+ * timeout+retry (see readClient.ts). `final` requests the canonical
+ * final-state variant (TransactionHashVariant.LATEST_FINAL) where the SDK
+ * supports it — required for any post-write verification readback. */
+async function view<T>(
+  client: ReadClient,
+  functionName: string,
+  args: unknown[] = [],
+  opts?: { final?: boolean }
+): Promise<T> {
+  return readWithErrorHandling(() =>
+    client.readContract({
+      address: contractAddress(),
+      functionName,
+      args: args as never,
+      ...(opts?.final ? { transactionHashVariant: "latest-final" as never } : {}),
+    }) as Promise<T>
+  );
 }
 
 export const contractReads = {
   listWorkOrders: (client: ReadClient, page = 0, pageSize = 20) =>
     view<WorkOrder[]>(client, "list_work_orders", [page, pageSize]),
-  getWorkOrder: (client: ReadClient, workOrderId: string) =>
-    view<WorkOrder>(client, "get_work_order", [workOrderId]),
-  getRequirementSet: (client: ReadClient, workOrderId: string, version = 0) =>
-    view<RequirementSet>(client, "get_requirement_set", [workOrderId, version]),
+  getWorkOrder: (client: ReadClient, workOrderId: string, final = false) =>
+    view<WorkOrder>(client, "get_work_order", [workOrderId], { final }),
+  getRequirementSet: (client: ReadClient, workOrderId: string, version = 0, final = false) =>
+    view<RequirementSet>(client, "get_requirement_set", [workOrderId, version], { final }),
   getRequirementHistory: (client: ReadClient, workOrderId: string) =>
     view<RequirementSet[]>(client, "get_requirement_history", [workOrderId]),
   listProviders: (client: ReadClient, page = 0, pageSize = 20) =>
     view<Provider[]>(client, "list_providers", [page, pageSize]),
-  getProvider: (client: ReadClient, providerId: string) =>
-    view<Provider>(client, "get_provider", [providerId]),
+  getProvider: (client: ReadClient, providerId: string, final = false) =>
+    view<Provider>(client, "get_provider", [providerId], { final }),
   getCredentialSubmission: (client: ReadClient, providerId: string, version = 0) =>
     view<CredentialSubmission>(client, "get_credential_submission", [providerId, version]),
   getClearanceState: (client: ReadClient, workOrderId: string, providerId: string) =>
@@ -58,8 +72,15 @@ export const contractReads = {
     client: ReadClient,
     workOrderId: string,
     providerId: string,
-    assessmentId = 0
-  ) => view<ClearanceAssessment>(client, "get_clearance_assessment", [workOrderId, providerId, assessmentId]),
+    assessmentId = 0,
+    final = false
+  ) =>
+    view<ClearanceAssessment>(
+      client,
+      "get_clearance_assessment",
+      [workOrderId, providerId, assessmentId],
+      { final }
+    ),
   getClearanceHistory: (client: ReadClient, workOrderId: string, providerId: string) =>
     view<ClearanceAssessment[]>(client, "get_clearance_history", [workOrderId, providerId]),
 };
@@ -104,6 +125,16 @@ async function runContractWrite<T>(opts: RunWriteOptions<T>): Promise<T> {
           const tx = await writeClient.getTransaction({ hash: hash as never });
           return (tx as unknown as { status: RawTxStatus }).status;
         },
+        // The real, load-bearing check: genlayer-js exposes the actual
+        // per-transaction execution outcome as `txExecutionResultName`
+        // (FINISHED_WITH_RETURN / FINISHED_WITH_ERROR / NOT_VOTED) —
+        // distinct from, and NOT implied by, consensus status. This is what
+        // must be checked before ever showing success (see txFlow.ts).
+        getExecutionResult: async () => {
+          const tx = await writeClient.getTransaction({ hash: hash as never });
+          return (tx as unknown as { txExecutionResultName?: RawExecutionResult })
+            .txExecutionResultName;
+        },
       };
     },
     readback,
@@ -132,7 +163,7 @@ export const contractWrites = {
         input.role,
         input.sources,
       ],
-      readback: () => contractReads.getWorkOrder(getReadClient(), input.work_order_id),
+      readback: () => contractReads.getWorkOrder(getReadClient(), input.work_order_id, true),
       verifyReadback: (wo) => wo.work_order_id === input.work_order_id,
       onStep,
     }),
@@ -150,7 +181,7 @@ export const contractWrites = {
       account,
       functionName: "update_regulatory_sources",
       args: [workOrderId, sources],
-      readback: () => contractReads.getWorkOrder(getReadClient(), workOrderId),
+      readback: () => contractReads.getWorkOrder(getReadClient(), workOrderId, true),
       verifyReadback: (wo) => wo.source_version > expectedSourceVersion,
       onStep,
     }),
@@ -167,7 +198,7 @@ export const contractWrites = {
       account,
       functionName: "extract_requirements",
       args: [workOrderId],
-      readback: () => contractReads.getRequirementSet(getReadClient(), workOrderId, 0),
+      readback: () => contractReads.getRequirementSet(getReadClient(), workOrderId, 0, true),
       verifyReadback: (rs) => rs.version > expectedRequirementVersion,
       onStep,
     }),
@@ -184,7 +215,7 @@ export const contractWrites = {
       account,
       functionName: "register_provider",
       args: [providerId, name],
-      readback: () => contractReads.getProvider(getReadClient(), providerId),
+      readback: () => contractReads.getProvider(getReadClient(), providerId, true),
       verifyReadback: (p) => p.provider_id === providerId,
       onStep,
     }),
@@ -202,7 +233,7 @@ export const contractWrites = {
       account,
       functionName: "create_credential_submission",
       args: [providerId, sources],
-      readback: () => contractReads.getProvider(getReadClient(), providerId),
+      readback: () => contractReads.getProvider(getReadClient(), providerId, true),
       verifyReadback: (p) => p.credential_version > expectedVersion,
       onStep,
     }),
@@ -220,7 +251,7 @@ export const contractWrites = {
       account,
       functionName: "update_credentials",
       args: [providerId, sources],
-      readback: () => contractReads.getProvider(getReadClient(), providerId),
+      readback: () => contractReads.getProvider(getReadClient(), providerId, true),
       verifyReadback: (p) => p.credential_version > expectedVersion,
       onStep,
     }),
@@ -238,7 +269,7 @@ export const contractWrites = {
       account,
       functionName: "assess_provider",
       args: [workOrderId, providerId],
-      readback: () => contractReads.getClearanceAssessment(getReadClient(), workOrderId, providerId, 0),
+      readback: () => contractReads.getClearanceAssessment(getReadClient(), workOrderId, providerId, 0, true),
       verifyReadback: (c) => c.assessment_id > expectedAssessmentId,
       onStep,
     }),
