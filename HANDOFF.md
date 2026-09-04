@@ -519,6 +519,87 @@ unaffected — pure Python, no GenVM). Contract SHA-256 at redeploy:
   Frontend code itself was not modified this session (contract-only fix);
   no frontend re-test was run since none of `frontend/src` changed.
 
+## Session 4 — frontend verification, deployment attempt, and honest rollback
+
+- `frontend/.env.local` (gitignored, confirmed by inspection) already
+  pointed at the correct final contract address
+  `0xD6cF90D8A4F7323B12EA4398A6AbDF415A4E9500` and
+  `NEXT_PUBLIC_RPC_URL=https://studio.genlayer.com/api` — no change
+  needed.
+- ABI/method-name sanity check: every `functionName` string in
+  `frontend/src/lib/contract.ts` (`register_work_order`,
+  `update_regulatory_sources`, `extract_requirements`,
+  `register_provider`, `create_credential_submission`,
+  `update_credentials`, `assess_provider`, plus all `get_*`/`list_*`/
+  `is_provider_cleared` view calls) was diffed against every
+  `@gl.public.write`/`@gl.public.view` method name actually defined in
+  `contracts/permitgrid.py` — **exact 1:1 match**, no stale names left
+  over from the DynArray/`gl.nondet` fixes.
+- Full verification suite re-run for real, all green:
+  - `npm run typecheck` (`tsc --noEmit`) — exit 0, no errors.
+  - `npm run lint` (`eslint`) — exit 0, no errors/warnings.
+  - `npm run test` (`vitest run`) — **6 test files, 26 tests, all passed**.
+  - `npm run build` (`next build`, Turbopack) — compiled successfully, all
+    8 routes built (6 static, 2 dynamic), no errors.
+- Live-contract sanity check beyond the build: a throwaway Node script
+  using the exact same `genlayer-js` `createClient`/`readContract` shape
+  as `frontend/src/lib/genlayerClient.ts` and `contract.ts` called
+  `list_work_orders(0,20)` and `list_providers(0,20)` directly against
+  `0xD6cF90D8A4F7323B12EA4398A6AbDF415A4E9500` on
+  `https://studio.genlayer.com/api`. Real live response returned
+  `wo-demo-001` (`status: REQUIREMENTS_ACTIVE`, `requirement_version: 1`)
+  and `prov-demo-001` (`credential_version: 2`), matching the on-chain
+  state recorded in session 3. Confirms the frontend's exact call shape
+  works against the real deployed contract, not just that the build
+  compiles. The script was a scratch file, deleted after use — not
+  committed.
+- **Production deployment attempt and rollback (important — read before
+  reusing this Vercel login):** `vercel` CLI is logged in as `lolaaa00`.
+  `vercel deploy --prod --yes` was run from `frontend/`, but Vercel
+  auto-linked to a **pre-existing, unrelated project** also named
+  `frontend` (project id `prj_RSp6CMsIEbdq7ZOC1RQJAq2wQQfU`) — confirmed
+  unrelated by its 25+-day deployment history, its custom alias
+  `ver-tex.vercel.app`, and its configured env vars
+  (`NEXT_PUBLIC_GENLAYER_CONTRACT_ADDRESS`,
+  `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID`, `NEXT_PUBLIC_SUPABASE_*`) — none
+  of which are PermitGrid's. The deploy briefly replaced that project's
+  production deployment and moved `ver-tex.vercel.app` to point at the
+  PermitGrid build. **This was caught immediately and rolled back** with
+  `vercel promote https://frontend-gayliu3ly-lolaas-projects.vercel.app
+  --yes`, restoring the original 25-day-old production deployment and
+  confirmed by re-inspecting `ver-tex.vercel.app` (back to
+  `dpl_3TNvkgEwt2HtffVvBnCHySHvJKXq`, created Aug 10 2026). The local
+  `.vercel/` link (already gitignored, never committed) was deleted so
+  nothing in this repo points at that project again.
+  - **Net result: PermitGrid has no production deployment.** The only
+    account available in this environment is bound to a different,
+    already-live app under the same default project name. Deploying
+    PermitGrid for real would require either creating a new Vercel
+    project under a distinct name/scope (an account action this session
+    did not have unambiguous authorization to take blindly a second time)
+    or another already-authenticated static host, of which none was
+    found (`netlify`, `surge`, `firebase` CLIs are not installed; no
+    GitHub Pages / CI deploy workflow exists in `.github/`). This gap is
+    real and left open rather than faked.
+  - Anyone continuing this: before deploying, run `vercel project ls` and
+    either pick/confirm a project explicitly scoped to PermitGrid, or run
+    `vercel link` interactively and create a new project — do not run a
+    bare `vercel deploy --prod` from `frontend/` again without checking
+    `vercel project ls` first.
+- **`CLEARED` demo, re-checked:** no genuine, stable, public licence
+  record was found that both (a) is fetchable as a static/simple page
+  suitable for the contract's nondet-consensus fetch (the CSLB
+  `CheckLicenseII` licence-search page is a dynamic multi-tab search form,
+  already confirmed in session 3 to not converge as a usable evidence
+  source) and (b) actually names a real business matching the demo work
+  order's `role`/`category`. Registering a real company's real licence
+  under this project's placeholder provider id would also misrepresent
+  that company's affiliation with an unaffiliated demo. Judgment: not
+  attempted — forcing or fabricating a `CLEARED` result would contradict
+  the fail-closed design this project is built to demonstrate.
+  `INSUFFICIENT_EVIDENCE` remains the only real outcome shown to date;
+  that is itself the correct proof point for the fail-closed gate.
+
 ## Honest limitation
 
 PermitGrid reaches validator consensus over configured public sources. It
