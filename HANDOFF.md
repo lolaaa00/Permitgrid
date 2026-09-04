@@ -530,10 +530,9 @@ unaffected — pure Python, no GenVM). Contract SHA-256 at redeploy:
   above) — a logging mistake, not a state-verification gap; the resulting
   on-chain state was independently confirmed by readback. Re-checked in a
   later audit pass (`git log --all -p | grep register_work_order`, and
-  `.local-spec/EVIDENCE_MATRIX.md`): the hash does not appear anywhere else
-  in this repo's history either. It is genuinely lost, not merely
-  undocumented — recorded here honestly rather than reconstructed or
-  guessed.
+  local internal notes): the hash does not appear anywhere else in this
+  repo's history either. It is genuinely lost, not merely undocumented —
+  recorded here honestly rather than reconstructed or guessed.
 - No production frontend deployment (e.g. Vercel) — still deferred.
   Frontend code itself was not modified this session (contract-only fix);
   no frontend re-test was run since none of `frontend/src` changed.
@@ -639,10 +638,9 @@ unaffected — pure Python, no GenVM). Contract SHA-256 at redeploy:
 
 ## Session 6 — prompt-injection/identity-safety test fixtures (real gap, closed), doc fixes
 
-A private audit found that prompt-injection and identity-safety test
-fixtures required by `.local-spec/09_VALIDATOR_SECURITY_AND_FAILURE_SPEC.md`
-("Prompt injection") and `.local-spec/12_TEST_PLAN.md` (items 6 and 8) did
-not exist as code anywhere in the repo — not just unrun, genuinely absent.
+A review found that prompt-injection and identity-safety test fixtures for
+the consensus stages did not exist as code anywhere in the repo — not just
+unrun, genuinely absent.
 
 **Added `test/test_prompt_injection_resistance.py`** (10 tests, pure
 Python, no Docker/network — run with plain `pytest`, same class as
