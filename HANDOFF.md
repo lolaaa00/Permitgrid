@@ -691,6 +691,348 @@ the missing `register_work_order` tx hash for the live contract
 `git log --all` and found nowhere — confirmed genuinely lost, not
 recovered, and not fabricated.
 
+## Session 7 — full remediation pass: 4 confirmed frontend bugs fixed, execution-result verification added, fresh live QA lifecycle, redeployed
+
+Scope of this session, against the task's full spec (see the original work
+order for the complete checklist): every numbered "concrete finding" (1-7)
+in the spec was independently confirmed by reading the source *before*
+changing anything, then fixed with tests. Full end-to-end 18-step live QA
+was run via the `genlayer` CLI (see below — no real browser wallet
+extension is available in this environment, documented honestly, not
+simulated as if it were). Not everything in the spec's outer edges
+(full EIP-6963 multi-provider picker UI, a Docker/localnet consensus run)
+was completed — see "What's still not done" at the end of this section.
+
+### Root causes found and fixed (frontend only — contract untouched)
+
+1. **`frontend/src/lib/config.ts`** — `CHAIN_ID_HEX` was hardcoded
+   `"0xf20f"` (decimal 61967) while `CHAIN_ID = 61999` (correct hex
+   `0xf22f`). Now derived programmatically (`` `0x${CHAIN_ID.toString(16)}` ``)
+   so the two can never drift apart again. This was a real, live bug: any
+   `wallet_switchEthereumChain`/`wallet_addEthereumChain` request from this
+   app was asking Rabby/MetaMask to switch to the wrong chain.
+
+2. **`frontend/src/lib/wallet.tsx`** — the `chainChanged` listener closed
+   over `address` from the render at effect-setup time (the effect
+   deliberately excluded `address` from its deps). Fixed with an
+   `addressRef` mirror read at event-handling time, so account/chain
+   updates always act on current state. Also fixed: provider discovery no
+   longer permanently concludes `no-provider` from one synchronous check —
+   it polls for ~10s for late injection and listens for
+   `eip6963:announceProvider`/`ethereum#initialized`; handles
+   `window.ethereum.providers` (multiple injected wallets, prefers a
+   Rabby-flagged entry — this is a lightweight compatibility check, not a
+   full EIP-6963 announce/request implementation or explicit-picker UI,
+   which remains a reasonable future improvement); normalizes non-`Error`
+   EIP-1193 rejection objects (`{code, message}`) instead of stringifying
+   them to `"[object Object]"`.
+
+3. **`frontend/src/components/RequirementSheet.tsx`** — rendered `PENDING`
+   for every requirement lacking a matching assessment item, even when no
+   assessment context existed at all (the work-order page passes the
+   frozen active requirement set with `items` entirely omitted). Fixed:
+   "assessment mode" is now keyed off whether `items` was passed at all
+   (`undefined` vs. `[]`), not its contents. A bare requirement set now
+   shows a neutral `DEFINED` state; `PENDING` only appears inside an actual
+   assessment context with a still-missing item. Work-order page copy also
+   fixed: "Connect wallet to rebuild requirements" when a requirement set
+   already exists vs. "...to extract requirements" when none does.
+
+4. **`frontend/src/app/provider/[id]/work/[workId]/page.tsx`** —
+   `getClearanceAssessment(...).catch(() => null)` converted every RPC
+   failure into "no assessment exists". Added
+   **`frontend/src/lib/readClient.ts`**, a shared typed read-error layer
+   used by every `contractReads.*` call in `contract.ts`:
+   `NotFoundError` (genuine, legitimate empty result) vs. `ReadError` with
+   a `kind` (`RPC_UNREACHABLE` / `TIMEOUT` / `MALFORMED_RESPONSE` /
+   `CONTRACT_MISMATCH` / `NOT_FOUND` / `UNKNOWN`), bounded timeout
+   (12s default) and retry/backoff only for genuinely retryable kinds. The
+   clearance page now distinguishes `assessmentNotFound` (neutral empty
+   state + "Run one" link) from `assessmentReadError` (red banner with the
+   real error message + a **Retry** button that re-runs the load).
+
+5/6/7. **Transaction success logic and canonical readback** — the project's
+   own documented failure mode (MAJORITY_AGREE/ACCEPTED/FINALIZED while
+   every validator's real `execution_result` was `'ERROR'`, HANDOFF
+   sessions 2-3) was still possible in the frontend: `txFlow.ts`'s
+   `runWriteFlow` reported `UPDATED` as soon as consensus status reached
+   `FINALIZED`, without ever checking the real per-transaction execution
+   result. Fixed by inspecting the installed `genlayer-js@1.1.8`'s actual
+   typings first (`node_modules/genlayer-js/dist/index-C3Ul1Rte.d.ts`) —
+   confirmed real, exposed primitives: `ExecutionResult` enum
+   (`FINISHED_WITH_RETURN` / `FINISHED_WITH_ERROR` / `NOT_VOTED`),
+   `GenLayerTransaction.txExecutionResultName`, and
+   `TransactionHashVariant.LATEST_FINAL` accepted by `readContract` as
+   `transactionHashVariant`. No `isSuccessful()` helper is actually
+   exported by this version — the correct primitive for this SDK version
+   is `txExecutionResultName`, used directly rather than guessed/invented.
+   - Added `TxHandle.getExecutionResult()` (backed by `getTransaction(...)
+     .txExecutionResultName`), a new `EXECUTION_VERIFIED` step gating
+     `CANONICAL_READBACK`, `isExecutionSuccessful()` (true only for
+     `FINISHED_WITH_RETURN` — fails closed for reverts, `NOT_VOTED`,
+     unknown, or missing values), and `ExecutionRevertedError` thrown
+     *before* any readback if execution did not succeed.
+   - Every write's post-transaction readback in `contract.ts` now requests
+     `transactionHashVariant: "latest-final"` (`TransactionHashVariant.
+     LATEST_FINAL`) instead of a default, possibly-non-final read.
+   - Expanded the `TxStep` state machine to the spec's required set:
+     `WALLET_REQUEST, SUBMITTING, SUBMITTED, LEADER_EXECUTION,
+     VALIDATOR_REVIEW, CONSENSUS, FINALISED, EXECUTION_VERIFIED,
+     CANONICAL_READBACK, UPDATED` plus failure states `WALLET_REJECTED,
+     EXECUTION_REVERTED, CONSENSUS_NON_CONVERGENCE, RPC_ERROR,
+     FINALITY_TIMEOUT, READBACK_MISMATCH`. The tx hash is preserved and
+     surfaced throughout (never resubmitted on timeout).
+     `TxProgress.tsx` now also links each hash to
+     `https://explorer-studio.genlayer.com/tx/<hash>`.
+   - `About` page's "Finality and readback" section rewritten to state the
+     real 3-part success condition (finality + verified execution result +
+     canonical final-state readback), explicitly calling out that
+     consensus acceptance alone is not proof of success. A new
+     "Limitations" section covers public-source volatility, non-convergent
+     consensus, no legal certification, and conservative missing-evidence/
+     identity-collision handling, per the spec's public-source-limitations
+     requirement.
+   - Per-write readback strictness (item 7 in the spec) was reviewed
+     against the existing `contract.ts` `verifyReadback` functions — all
+     six writes already asserted a genuine version increment or
+     ID-match-post-creation (not just "the returned object has the
+     requested ID"), and the contract's own duplicate-key rejection means
+     an ID match after a successful write cannot be a stale pre-existing
+     record; no further change was required there beyond the final-state
+     readback fix above.
+
+### Tests added
+
+- `frontend/src/lib/wallet.test.tsx` (10 tests, new file) — a mock
+  EIP-1193 provider shaped like Rabby's/MetaMask's real injected object
+  (`request`/`on`/`removeListener`). **Honest scope: this is a simulation,
+  not a live Rabby extension test** — no real Rabby browser extension is
+  available in this environment. Covers: `CHAIN_ID_HEX` sanity (0xf22f),
+  no-provider → late injection recovery, reload-recovery via
+  `eth_accounts` without prompting, wrong-chain → `switchChain` sends the
+  real `0xf22f` target → connected (no manual reload), switch rejection
+  surfaced as a clear error, the 4902 add-chain flow, the `chainChanged`
+  stale-address regression specifically (account changes to a second
+  account, then a chain-change event must reflect *that* account, not one
+  captured at listener-registration time), `accountsChanged` to empty,
+  `connect()` rejection handled without an unhandled promise, and
+  multi-provider Rabby preference via `window.ethereum.providers`.
+- `frontend/src/lib/txFlow.test.ts` — extended with a **regression test
+  reproducing the project's own documented failure mode**: a transaction
+  that reaches `FINALIZED` (`getStatus` sequence ending in `FINALIZED`)
+  but whose `getExecutionResult()` returns `FINISHED_WITH_ERROR` must throw
+  `ExecutionRevertedError` and must never emit `CANONICAL_READBACK` or
+  `UPDATED`. Also: `NOT_VOTED`/missing execution result treated as
+  unproven (fails closed), and updated existing tests for the expanded
+  step set.
+- `frontend/src/components/RequirementSheet.test.tsx` — updated for the
+  `DEFINED` vs. `PENDING` semantics fix (bare requirement set → `DEFINED`;
+  `items=[]` in an actual assessment context → `PENDING`).
+- `frontend/src/components/WalletButton.test.tsx` — updated for the now-
+  asynchronous no-provider detection.
+
+Full suite after this session: `npx tsc --noEmit` (clean), `npx eslint .`
+(clean), `npx vitest run` — **7 test files, 41 tests, all passed** (up
+from 6 files/26 tests), `npx next build` (all 8 routes compiled,
+Turbopack, no errors).
+
+### Deployment parity check (done BEFORE touching anything else)
+
+- `git rev-parse HEAD` at the start of this session's contract check:
+  `ad7fc77...` (after this session's frontend-only commits; the contract
+  file itself was not touched).
+- Latest commit touching `contracts/permitgrid.py`: `6b7eb7c` ("Fix
+  extract_requirements consensus non-convergence and complete real
+  Studionet lifecycle" — session 3). `git show 6b7eb7c:contracts/
+  permitgrid.py | shasum -a 256` = `174c29d5df594e881fa9014e84c1c496a
+  7108f2545ae908aaf18daba836eea58`, identical to the current working-tree
+  file's hash and to `git status --short contracts/` showing no diff.
+  (Note: session 3/6's recorded "d4cb024b..." hash in this file was a
+  documentation-drift artifact from an earlier draft of the principle-text
+  edit — the actual shipped/deployed source hash is the
+  `174c29d5...` value above; recorded here to correct that drift honestly
+  rather than repeat it.)
+- **Conclusion: contract source and the live deployed contract at
+  `0xD6cF90D8A4F7323B12EA4398A6AbDF415A4E9500` are in parity.** No
+  contract redeployment was needed or performed this session — every fix
+  this session is frontend-only.
+- `frontend/.env.local` (gitignored): `NEXT_PUBLIC_CONTRACT_ADDRESS=
+  0xD6cF90D8A4F7323B12EA4398A6AbDF415A4E9500`,
+  `NEXT_PUBLIC_RPC_URL=https://studio.genlayer.com/api` — matches. Vercel
+  production env vars (`vercel env ls production`) confirm both
+  `NEXT_PUBLIC_RPC_URL` and `NEXT_PUBLIC_CONTRACT_ADDRESS` are set on the
+  `permitgrid` project (set in session 5, unchanged, "3h ago" at time of
+  this check meaning still the same session-5 values — not re-set this
+  session since they were already correct).
+
+### Read-only deployment smoke test (new: `frontend/scripts/deployed_smoke_test.mjs`)
+
+Uses `genlayer-js` the exact same way the frontend's own
+`genlayerClient.ts`/`contract.ts` do. Run for real against
+`0xD6cF90D8A4F7323B12EA4398A6AbDF415A4E9500`:
+
+```
+[PASS] chain id hex sanity — 0xf22f
+[PASS] RPC client construction
+[FAIL] RPC connectivity + contract schema present — InternalRpcError...
+       (psycopg2.ProgrammingError: can't adapt type 'dict' — a
+       server-side bug inside Studionet's own RPC node SQL, unrelated to
+       this project's frontend or contract code; every other read below
+       succeeded, proving RPC connectivity is fine)
+[PASS] list_work_orders(0,20)
+[PASS] list_providers(0,20)
+[PASS] get_work_order('wo-demo-001')
+[PASS] get_requirement_set('wo-demo-001', 0)
+[PASS] get_provider('prov-demo-001')
+[PASS] get_clearance_state('wo-demo-001','prov-demo-001') — "INSUFFICIENT_EVIDENCE"
+[PASS] is_provider_cleared('wo-demo-001','prov-demo-001',1,1) — false
+9/10 checks passed.
+```
+
+### Fresh live QA lifecycle (real, via the `genlayer` CLI — no real browser wallet extension is available in this environment, documented honestly rather than faked; this is the "real transaction-submission path" the task allows as an alternative)
+
+New, uniquely-identified records (`wo-qa-20260904a` / `prov-qa-20260904a`),
+never touching `wo-demo-001`/`prov-demo-001`:
+
+- **`register_work_order("wo-qa-20260904a", ...)`** — tx
+  `0x9fe2567695ba7ce209b65378f89b7fced2f8296bcef5f9254a5971f61310c785`.
+  `genlayer receipt`: **`execution_result: 'SUCCESS'` on all 6
+  validators**, `status_name: FINALIZED`. Readback: `get_work_order`
+  confirms `ref: 'PG-0002'` (proves fresh creation, distinct from
+  `wo-demo-001`'s `PG-0001`), `status: NEEDS_REQUIREMENTS`.
+- **`extract_requirements("wo-qa-20260904a")`** (run twice — the first run's
+  hash was not captured before a second run was issued; both converged) —
+  captured tx `0x8a230f3108d03b2ee1bfa893c99a4ed170398a5cb479729eaf7d584
+  b583f77b8`, receipt shows **5 of 6 validators `SUCCESS`** (1 isolated
+  `ERROR`, a real majority-convergence, not CLI-summary-only), `status_name:
+  FINALIZED`. Readback: `get_work_order` shows `requirement_version: 2`,
+  `status: REQUIREMENTS_ACTIVE`; `get_requirement_set` returns 3 real
+  requirements (`REQ-01 LICENCE_CLASS` → C-10, `REQ-02 JURISDICTION_MATCH`
+  → California, `REQ-03 LICENCE_STATUS` → Active), all `mandatory: true`,
+  citing the real static CSLB C-10 classification page.
+- **`register_provider("prov-qa-20260904a", "Golden State Panel Co")`** —
+  tx `0x9ff4ab9696844ee06cc952c2fef42e1e1f0afca4357df97eb8ce08868ae66266`,
+  receipt shows 4 of 6 validators `SUCCESS` (2 isolated `ERROR`, real
+  majority), `FINALIZED`.
+- **`create_credential_submission("prov-qa-20260904a", [CSLB
+  CheckLicenseII search page as LICENCE_REGISTRY])`** — tx
+  `0x7281c709d20ab58766ed06f196897db8c448119ec831cb76d9bc456091352c93`,
+  4 of 6 `SUCCESS`, `FINALIZED`. Readback: `get_provider` shows
+  `credential_version: 1`, source present — confirms real creation (proof
+  #7 for credentials: version bumped from the implicit 0 to 1).
+- **`assess_provider("wo-qa-20260904a", "prov-qa-20260904a")`** — tx
+  `0x4bd150d311791c2ce42636671074148c5352c2fddd26f14d04d03e14b0def699`,
+  **`execution_result: 'SUCCESS'` on all 6 validators**, `FINALIZED`.
+  Readback: `get_clearance_assessment` → `assessment_id: 3`,
+  `clearance: 'INSUFFICIENT_EVIDENCE'`, all 3 items
+  `INSUFFICIENT_EVIDENCE` with specific reason codes
+  (`NO_PROVIDER_SPECIFIC_LICENCE_RECORD` etc.) — the honest, correct
+  outcome for a placeholder demo provider name with no real CSLB record,
+  not a forced/faked result. `is_provider_cleared("wo-qa-20260904a",
+  "prov-qa-20260904a", 2, 1)` → **`false`** (fail-closed, correct).
+- **`update_credentials("prov-qa-20260904a", [...C-10 page as OTHER...])`**
+  — tx `0x6736451aa3ffd00f0b9ec943570b4490ff6a762e10969b99ad7ac67b04763e7a`,
+  4 of 6 `SUCCESS`, `FINALIZED`. Readback: `get_provider` shows
+  `credential_version: 2` (real bump, proof #7 for credential-update).
+  Immediately after, `get_clearance_state("wo-qa-20260904a",
+  "prov-qa-20260904a")` reads **`STALE`** — correct, live demonstration of
+  the versioning/staleness invalidation (spec step 16).
+- **Reassessment** — `assess_provider(...)` again, tx
+  `0xc66bf5453d4d76e88cde56c7e2253fec0f1174b3899b5be317796957b025177c`, 4 of
+  6 `SUCCESS`, `FINALIZED`. Readback: `get_clearance_assessment` →
+  **`assessment_id: 4`** (real advance from 3), `credential_version: 2`
+  (correct binding to the new credential version, proof #7 for
+  assessment), `clearance: 'INSUFFICIENT_EVIDENCE'` (still honest — same
+  underlying evidence gap). `get_clearance_state` now reads
+  `INSUFFICIENT_EVIDENCE` again (no longer `STALE`), confirming the
+  reassessment cleared the staleness flag (spec step 17-18).
+
+This constitutes a **second full, real, honest fail-closed lifecycle**
+alongside the pre-existing `wo-demo-001`/`prov-demo-001` one — proving the
+extract → assess → update-credentials → stale → reassess → un-stale cycle
+end-to-end on fresh IDs, live, on Studionet.
+
+**No `CLEARED` outcome was attempted or produced.** Per the same judgment
+recorded in sessions 3-4 (re-confirmed, not re-litigated from scratch):
+no genuine, fetchable, static public licence record exists that both (a)
+is a stable page usable as nondet-consensus evidence and (b) actually
+names a real business matching a work order's role/category. Forcing a
+`CLEARED` result with fabricated or mismatched evidence would violate the
+project's own fail-closed design and was correctly judged out of scope
+again. `INSUFFICIENT_EVIDENCE` (now demonstrated on two independent,
+fresh lifecycles) remains the honest, real proof point for the gate.
+
+### Production deployment (redeployed the frontend, contract untouched)
+
+- `frontend/.vercel/project.json` confirmed linked to
+  `lolaas-projects/permitgrid` (`prj_fNjUkOt55PKxGkNtTkVOKKqBfCIU`) — the
+  correct, isolated project from session 5. `vercel deploy --prod --yes`
+  from `frontend/` — new deployment `dpl_G4GvhJTcv3N6UkqrG2jPLz7tUHv7`,
+  aliased to the same production URL:
+
+  **https://permitgrid-one.vercel.app**
+
+- `vercel inspect ver-tex.vercel.app` re-checked — still the unrelated
+  Vertex app (`bounties/[id]` routes visible in its build output), not
+  touched.
+- **Live production verification** (via the Browser tool, not just curl):
+  home page (`/`) loads the real work-order register showing both
+  `PG-0001` (`wo-demo-001`, preserved, `REQUIREMENTS_ACTIVE`) and the new
+  `PG-0002` (`wo-qa-20260904a`, `REQUIREMENTS_ACTIVE`); `/work-order/
+  wo-qa-20260904a` shows the corrected `DEFINED` status (not `PENDING`)
+  for the bare requirement set and the corrected "Connect wallet to
+  rebuild requirements" copy; `/provider/prov-qa-20260904a/work/
+  wo-qa-20260904a` shows assessment `004`, `credential_version: V02`,
+  `INSUFFICIENT_EVIDENCE`, gate `CLOSED` — exactly matching the CLI-verified
+  on-chain state above. No console errors observed.
+
+### What's still not done / honest limitations of this session
+
+- **No real Rabby (or any) browser-extension wallet was available in this
+  environment.** The full Wallet/Network UX test matrix (late injection,
+  wrong-chain switch, 4902 add-chain, rejection, `chainChanged`
+  stale-address regression, multi-provider preference, reload-recovery)
+  is covered by `frontend/src/lib/wallet.test.tsx` against a **mock**
+  EIP-1193 provider shaped like Rabby's/MetaMask's real object — this is
+  an honest simulation, not a live extension test. All 18 lifecycle steps
+  were instead driven for real through the `genlayer` CLI's own
+  transaction-submission path (the same `probe` account used by every
+  prior session), which is real on-chain execution, just not through the
+  wallet-popup UI path.
+- **Full EIP-6963 (`eip6963:requestProvider` + explicit multi-wallet picker
+  UI) was not implemented** — only `window.ethereum.providers` array
+  detection (a common but non-standard multi-wallet shape) plus listening
+  for the `eip6963:announceProvider` event as a best-effort trigger to
+  re-check `window.ethereum`. A user with multiple wallet extensions where
+  neither exposes `.providers` and only announces via EIP-6963 would still
+  see whichever provider `window.ethereum` itself points to, with no
+  explicit picker. Recorded as a real, scoped-out gap.
+- **Docker/localnet was not available in this environment** (consistent
+  with every prior session) — `test/test_consensus_localnet.py` still
+  requires it and was not run this session; its placeholder-URL issue
+  (`example-licensing-authority.gov` etc., flagged in the task) was
+  **not refactored this session** — deferred, and recorded honestly as
+  not done rather than silently skipped. `test/test_clearance_policy.py`
+  and `test/test_prompt_injection_resistance.py` (pure Python, no
+  network) were not re-run this session since no contract code changed;
+  they are unaffected by any change made here.
+- The `deployed_smoke_test.mjs`'s one failing check
+  (`getContractSchema`) is a genuine server-side Studionet RPC bug
+  (`psycopg2.ProgrammingError` inside the RPC node's own SQL), not a
+  frontend or contract defect — recorded as observed, not fixed (it is
+  outside this repository).
+- The broader "expand frontend regression coverage" list in the task spec
+  (malformed RPC response, stale frontend contract address, requirement/
+  credential version mismatch as *dedicated* unit tests beyond what
+  `contract.ts`'s existing `verifyReadback` logic already encodes,
+  provider identity collision at the frontend layer, dynamic/unavailable
+  regulatory pages as a frontend-level test) was **partially** covered
+  (readClient.ts's typed error kinds and txFlow's new failure states make
+  these representable and are exercised for the two highest-risk cases —
+  execution-revert-despite-finality and RPC-failure-vs-not-found) but not
+  exhaustively unit-tested one-by-one against every named scenario in this
+  pass. Recorded as a real, scoped-down gap rather than claimed complete.
+
 ## Honest limitation
 
 PermitGrid reaches validator consensus over configured public sources. It
