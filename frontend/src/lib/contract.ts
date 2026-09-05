@@ -96,6 +96,37 @@ export interface WriteWorkOrderInput {
   sources: RegSource[];
 }
 
+// Live-QA finding: genlayer-js@1.1.8's `getTransaction()` returns a
+// DIFFERENT shape depending on the target network. For Studionet/localnet
+// (`client.chain.isStudio === true`, which is what this project always
+// targets), the raw JSON-RPC transaction is returned close to as-is:
+// `.status` is a NUMBER (the string name is on the separate `.statusName`
+// field), and `.txExecutionResultName` is never populated at all — that
+// field is only computed on the non-studio ("mainnet"-shaped) code path.
+// The real per-validator execution outcome for a studio transaction lives
+// at `consensus_data.leader_receipt[].execution_result`, using the string
+// vocabulary `"SUCCESS"` / `"ERROR"` (confirmed directly via `genlayer
+// receipt` against this project's own live transactions — see
+// HANDOFF.md), NOT the mainnet-path enum names `FINISHED_WITH_RETURN` /
+// `FINISHED_WITH_ERROR`. Reading the wrong fields silently treated every
+// genuinely successful real browser-wallet write as unverified. These two
+// helpers read whichever shape is actually present.
+function extractStatus(tx: unknown): RawTxStatus {
+  const t = tx as { statusName?: string; status?: unknown };
+  return (t.statusName ?? String(t.status)) as RawTxStatus;
+}
+
+function extractExecutionResult(tx: unknown): RawExecutionResult {
+  const t = tx as {
+    txExecutionResultName?: RawExecutionResult;
+    consensus_data?: { leader_receipt?: { execution_result?: string } | { execution_result?: string }[] };
+  };
+  if (t.txExecutionResultName !== undefined) return t.txExecutionResultName;
+  const receipt = t.consensus_data?.leader_receipt;
+  const first = Array.isArray(receipt) ? receipt[0] : receipt;
+  return first?.execution_result;
+}
+
 interface RunWriteOptions<T> {
   writeClient: WriteClient;
   account: Address;
@@ -142,17 +173,15 @@ async function runContractWrite<T>(opts: RunWriteOptions<T>): Promise<T> {
         hash,
         getStatus: async () => {
           const tx = await writeClient.getTransaction({ hash: hash as never });
-          return (tx as unknown as { status: RawTxStatus }).status;
+          return extractStatus(tx);
         },
         // The real, load-bearing check: genlayer-js exposes the actual
-        // per-transaction execution outcome as `txExecutionResultName`
-        // (FINISHED_WITH_RETURN / FINISHED_WITH_ERROR / NOT_VOTED) —
-        // distinct from, and NOT implied by, consensus status. This is what
-        // must be checked before ever showing success (see txFlow.ts).
+        // per-transaction execution outcome — distinct from, and NOT implied
+        // by, consensus status. This is what must be checked before ever
+        // showing success (see txFlow.ts and extractExecutionResult below).
         getExecutionResult: async () => {
           const tx = await writeClient.getTransaction({ hash: hash as never });
-          return (tx as unknown as { txExecutionResultName?: RawExecutionResult })
-            .txExecutionResultName;
+          return extractExecutionResult(tx);
         },
       };
     },

@@ -121,3 +121,108 @@ describe("contract.ts write path — account normalization", () => {
     expect(writeClient.writeContract).not.toHaveBeenCalled();
   });
 });
+
+// Regression test for a second real live-QA finding, found immediately
+// after fixing the account-normalization bug above: a real approved
+// browser-wallet write (tx 0x3cffcf3f613e5aab7ef151f49ce4df5d4aed2f21dae55dcf70b24b1c86176f7c,
+// confirmed via `genlayer receipt` to be a genuine on-chain SUCCESS —
+// status_name FINALIZED, leader_receipt execution_result SUCCESS) was
+// still displayed as FAILED by the frontend. Root cause: genlayer-js's
+// `getTransaction()` returns a DIFFERENT shape for Studionet (`isStudio:
+// true`, what this project always targets) than the mainnet-path shape the
+// original code assumed — `.status` is a raw NUMBER (the string name is on
+// `.statusName`), and `.txExecutionResultName` is never populated at all;
+// the real per-validator result lives at
+// `consensus_data.leader_receipt[].execution_result` using "SUCCESS"/
+// "ERROR", not "FINISHED_WITH_RETURN"/"FINISHED_WITH_ERROR". This
+// reproduces the exact real transaction shape (trimmed to the relevant
+// fields) and asserts the write flow now correctly recognizes it as
+// successful.
+describe("contract.ts write path — Studionet transaction shape", () => {
+  it("recognizes a real Studionet-shaped success (numeric status + consensus_data.leader_receipt), not just the mainnet shape", async () => {
+    const realStudioTransaction = {
+      status: 7, // numeric — NOT the string "FINALIZED"
+      statusName: "FINALIZED",
+      result: 6,
+      result_name: "MAJORITY_AGREE",
+      // txExecutionResultName intentionally absent — genlayer-js never sets
+      // this field for Studionet transactions.
+      consensus_data: {
+        leader_receipt: [
+          { execution_result: "SUCCESS", mode: "leader" },
+        ],
+      },
+    };
+    const writeClient = {
+      account: { address: ACCOUNT, type: "json-rpc" },
+      writeContract: vi.fn(async () => "0x3cffcf3f613e5aab7ef151f49ce4df5d4aed2f21dae55dcf70b24b1c86176f7c"),
+      getTransaction: vi.fn(async () => realStudioTransaction),
+    };
+    const steps: string[] = [];
+
+    // getWorkOrder's readback is stubbed to reject in this test file (no
+    // real RPC available) — that's an expected, separate limitation, not
+    // what this test is verifying. What matters is that execution is
+    // recognized as verified (EXECUTION_VERIFIED reached) BEFORE the
+    // readback step runs, proving the Studionet success shape is read
+    // correctly.
+    await contractWrites
+      .registerWorkOrder(
+        writeClient as never,
+        ACCOUNT,
+        {
+          work_order_id: "wo-walletqa-20260905c",
+          title: "t",
+          category: "c",
+          jurisdiction: "j",
+          exact_scope: "s",
+          environment: "e",
+          role: "r",
+          sources: [],
+        },
+        (step) => steps.push(step)
+      )
+      .catch((err) => {
+        expect(err.message).toMatch(/Canonical readback failed/);
+      });
+
+    expect(steps).toContain("EXECUTION_VERIFIED");
+    expect(steps).not.toContain("EXECUTION_REVERTED");
+    expect(steps).not.toContain("ERROR");
+  });
+
+  it("still correctly rejects a real Studionet-shaped ERROR result as reverted (fail-closed)", async () => {
+    const revertedStudioTransaction = {
+      status: 7,
+      statusName: "FINALIZED",
+      consensus_data: {
+        leader_receipt: [{ execution_result: "ERROR", mode: "leader" }],
+      },
+    };
+    const writeClient = {
+      account: { address: ACCOUNT, type: "json-rpc" },
+      writeContract: vi.fn(async () => "0xdeadbeef"),
+      getTransaction: vi.fn(async () => revertedStudioTransaction),
+    };
+    const steps: string[] = [];
+
+    await expect(
+      contractWrites.registerWorkOrder(
+        writeClient as never,
+        ACCOUNT,
+        {
+          work_order_id: "wo-test",
+          title: "t",
+          category: "c",
+          jurisdiction: "j",
+          exact_scope: "s",
+          environment: "e",
+          role: "r",
+          sources: [],
+        },
+        (step) => steps.push(step)
+      )
+    ).rejects.toThrow(/did not succeed/);
+    expect(steps).toContain("EXECUTION_REVERTED");
+  });
+});
