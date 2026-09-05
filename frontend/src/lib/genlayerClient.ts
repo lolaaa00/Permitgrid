@@ -1,6 +1,6 @@
-import { createClient } from "genlayer-js";
+import { createClient, chains } from "genlayer-js";
 import type { Address } from "genlayer-js/types";
-import { CHAIN_ID, CHAIN_NAME, CHAIN_CURRENCY, RPC_URL, EXPLORER_URL, requireContractAddress } from "./config";
+import { RPC_URL, EXPLORER_URL, requireContractAddress } from "./config";
 
 // A minimal EIP-1193 provider shape — we don't want a hard dependency on any
 // particular injected-wallet typing here.
@@ -10,11 +10,19 @@ export type Eip1193Provider = {
   removeListener?: (event: string, handler: (...args: unknown[]) => void) => void;
 };
 
+// Live-QA finding: a hand-rolled chain object (just id/name/rpcUrls/
+// nativeCurrency/blockExplorers) is NOT enough for genlayer-js@1.1.8 to
+// build a real write transaction. writeContract's internal
+// `_encodeAddTransactionData` reads `client.chain.defaultNumberOfInitialValidators`
+// and `client.chain.defaultConsensusMaxRotations` (both required, uint256
+// ABI args) plus `consensusMainContract`/`isStudio` — none of which a
+// minimal object provides, so they were `undefined` and viem's ABI encoder
+// threw "Cannot convert undefined to a BigInt" on every real submit. Fixed
+// by using genlayer-js's own official `chains.studionet` preset (which
+// carries all of that) instead of reinventing it, overriding only the
+// explorer URL to match this project's documented Studionet explorer.
 const genLayerChain = {
-  id: CHAIN_ID,
-  name: CHAIN_NAME,
-  rpcUrls: { default: { http: [RPC_URL] } },
-  nativeCurrency: CHAIN_CURRENCY,
+  ...chains.studionet,
   blockExplorers: { default: { name: "GenLayer Explorer", url: EXPLORER_URL } },
 };
 
