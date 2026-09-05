@@ -112,8 +112,27 @@ async function runContractWrite<T>(opts: RunWriteOptions<T>): Promise<T> {
     functionName,
     onStep,
     submit: async () => {
+      // IMPORTANT: pass the write client's own (already-normalized) account,
+      // not the raw address string again. `getWriteClient` configures the
+      // client with `account: <string>`, and viem's `createClient` parses
+      // that into `{ address, type: "json-rpc" }` at construction time. If a
+      // raw string is passed a second time here, genlayer-js's
+      // `writeContract` (`senderAccount = account || client.account`) takes
+      // this unnormalized string over the properly-parsed `client.account`,
+      // and its `senderAccount.address` access on a plain string is
+      // `undefined` — producing exactly the confirmed live bug
+      // (`Address "undefined" is invalid`) on every real browser-wallet
+      // write, independent of wallet choice or rejection. Confirmed by
+      // reading genlayer-js@1.1.8's actual `writeContract`/`validateAccount`
+      // source and reproducing the normalization directly against the
+      // installed viem version. `account` is still required in this
+      // function's signature (and checked against `writeClient.account`) so
+      // a mismatched/stale client can never silently sign as the wrong
+      // address.
+      if (writeClient.account && (writeClient.account as { address?: string }).address?.toLowerCase() !== account.toLowerCase()) {
+        throw new Error("Write client account does not match the connected wallet address.");
+      }
       const hash = (await writeClient.writeContract({
-        account: account as never,
         address: contractAddress(),
         functionName,
         args: args as never,
