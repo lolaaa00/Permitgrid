@@ -79,14 +79,23 @@ export type RawTxStatus =
   | "APPEAL_COMMITTING"
   | "UNINITIALIZED";
 
-// Mirrors genlayer-js's ExecutionResult enum (txExecutionResultName /
-// leader_receipt[].execution_result in the CLI). This is the ONLY thing that
-// tells us whether the contract call itself succeeded or reverted —
-// consensus status alone (ACCEPTED/FINALIZED) does not.
+// Mirrors the real execution-outcome values genlayer-js/the GenLayer RPC
+// actually use. There are two vocabularies depending on network shape:
+// the mainnet-path `txExecutionResultName` enum (NOT_VOTED /
+// FINISHED_WITH_RETURN / FINISHED_WITH_ERROR), and the Studionet/localnet
+// `leader_receipt[].execution_result` string ("SUCCESS" / "ERROR"), which
+// is what this project's live transactions actually return (confirmed via
+// `genlayer receipt` — see HANDOFF.md). Both are handled since which one is
+// present depends on `client.chain.isStudio` (see contract.ts's
+// extractExecutionResult). This is the ONLY thing that tells us whether the
+// contract call itself succeeded or reverted — consensus status alone
+// (ACCEPTED/FINALIZED) does not.
 export type RawExecutionResult =
   | "NOT_VOTED"
   | "FINISHED_WITH_RETURN"
   | "FINISHED_WITH_ERROR"
+  | "SUCCESS"
+  | "ERROR"
   | string // tolerate unknown/future values defensively
   | undefined
   | null;
@@ -121,10 +130,11 @@ export function mapRawStatusToStep(status: RawTxStatus): TxStep {
 }
 
 /** True only for a genuinely successful contract execution. Anything else
- * (including "NOT_VOTED", unknown values, or missing data) is treated as
- * NOT proven successful — fail closed. */
+ * (including "NOT_VOTED", "ERROR", unknown values, or missing data) is
+ * treated as NOT proven successful — fail closed. Accepts both the
+ * mainnet-path and Studionet-path success values (see RawExecutionResult). */
 export function isExecutionSuccessful(result: RawExecutionResult): boolean {
-  return result === "FINISHED_WITH_RETURN";
+  return result === "FINISHED_WITH_RETURN" || result === "SUCCESS";
 }
 
 export class TxFlowError extends Error {
