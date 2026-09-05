@@ -45,24 +45,50 @@ function errMessage(err: unknown): string {
   return String(err);
 }
 
-/** Finds the currently injected EIP-1193 provider. Handles the common
- * multi-wallet case (e.g. Rabby + MetaMask both installed) by preferring
- * `window.ethereum.providers` (the array multiple extensions populate) and
- * picking a Rabby-flagged provider if present, else the first available.
- * This is deliberately simple window.ethereum probing, not full EIP-6963
- * (`eip6963:requestProvider`) — a real EIP-6963 upgrade would let the user
- * pick explicitly among announced providers, which is a reasonable further
- * improvement but out of scope for this pass. */
+/** EIP-6963 announced providers, keyed by rdns. Some wallets (e.g. OKX)
+ * inject only a bespoke global (`window.okxwallet`) and never populate
+ * `window.ethereum` at all when installed alongside another wallet that
+ * claims that slot (e.g. Rabby) — relying on `window.ethereum` alone
+ * misses them entirely and surfaces a false "no wallet provider found".
+ * EIP-6963 (`eip6963:announceProvider`) is the standard fix: every
+ * compliant wallet announces itself with its own provider instance
+ * regardless of what owns `window.ethereum`, so this is the primary
+ * discovery path, with `window.ethereum`/`window.okxwallet` as fallbacks
+ * for wallets that predate/skip EIP-6963. */
+const eip6963Providers = new Map<string, Eip1193Provider>();
+if (typeof window !== "undefined") {
+  window.addEventListener("eip6963:announceProvider", ((event: CustomEvent) => {
+    const { info, provider } = event.detail ?? {};
+    if (info?.rdns && provider) eip6963Providers.set(info.rdns, provider);
+  }) as EventListener);
+  // Ask already-loaded wallets to (re-)announce themselves immediately.
+  window.dispatchEvent(new Event("eip6963:requestProvider"));
+}
+
+/** Finds the currently injected EIP-1193 provider. Checks EIP-6963
+ * announced providers first (works regardless of which extension owns
+ * `window.ethereum`), then falls back to `window.ethereum` (handling the
+ * common multi-wallet `.providers` array, preferring a Rabby-flagged
+ * entry if present), then finally to known bespoke globals (currently
+ * `window.okxwallet`) for wallets that don't support EIP-6963. */
 function getInjectedProvider(): Eip1193Provider | null {
   if (typeof window === "undefined") return null;
-  const eth = (window as unknown as {
-    ethereum?: Eip1193Provider & { providers?: (Eip1193Provider & { isRabby?: boolean })[]; isRabby?: boolean };
-  }).ethereum;
-  if (!eth) return null;
-  if (Array.isArray(eth.providers) && eth.providers.length > 0) {
-    return eth.providers.find((p) => p.isRabby) ?? eth.providers[0];
+  if (eip6963Providers.size > 0) {
+    return eip6963Providers.values().next().value ?? null;
   }
-  return eth;
+  const w = window as unknown as {
+    ethereum?: Eip1193Provider & { providers?: (Eip1193Provider & { isRabby?: boolean })[]; isRabby?: boolean };
+    okxwallet?: Eip1193Provider;
+  };
+  const eth = w.ethereum;
+  if (eth) {
+    if (Array.isArray(eth.providers) && eth.providers.length > 0) {
+      return eth.providers.find((p) => p.isRabby) ?? eth.providers[0];
+    }
+    return eth;
+  }
+  if (w.okxwallet) return w.okxwallet;
+  return null;
 }
 
 export function WalletProvider({ children }: { children: ReactNode }) {

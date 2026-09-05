@@ -94,12 +94,17 @@ function setEthereum(value: unknown) {
   (window as unknown as { ethereum?: unknown }).ethereum = value;
 }
 
+function setOkxWallet(value: unknown) {
+  (window as unknown as { okxwallet?: unknown }).okxwallet = value;
+}
+
 describe("wallet.tsx", () => {
   beforeEach(() => {
     setEthereum(undefined);
   });
   afterEach(() => {
     setEthereum(undefined);
+    setOkxWallet(undefined);
     vi.useRealTimers();
   });
 
@@ -275,4 +280,27 @@ describe("wallet.tsx", () => {
     );
     await waitFor(() => expect(screen.getByTestId("address").textContent).toBe("0xRabby"));
   });
+
+  // Regression test for a real live-QA finding: OKX Wallet injects itself
+  // as `window.okxwallet` and does NOT populate `window.ethereum` when
+  // installed alongside another wallet (e.g. Rabby) that claims that slot.
+  // The original discovery logic only ever checked `window.ethereum`,
+  // producing a false "no wallet provider found" with OKX active. This
+  // reproduces exactly that browser state and asserts the fallback works.
+  it("falls back to window.okxwallet when window.ethereum is absent (OKX Wallet without EIP-6963 announce)", async () => {
+    const okx = makeMockProvider({ accounts: ["0xOkxUser"], chainIdHex: "0xf22f" });
+    setEthereum(undefined);
+    setOkxWallet(okx);
+
+    render(
+      <WalletProvider>
+        <Probe />
+      </WalletProvider>
+    );
+
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("connected"), {
+      timeout: 3000,
+    });
+    expect(screen.getByTestId("address").textContent).toBe("0xOkxUser");
+  }, 10000);
 });
