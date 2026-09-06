@@ -3,13 +3,17 @@
 import { use, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useWallet } from "@/lib/wallet";
-import { contractReads } from "@/lib/contract";
+import { contractReads, contractWrites } from "@/lib/contract";
 import { isContractConfigured } from "@/lib/config";
 import { NotFoundError, ReadError } from "@/lib/readClient";
-import type { WorkOrder, Provider, RequirementSet, ClearanceAssessment } from "@/lib/types";
+import { CREDENTIAL_ROLES } from "@/lib/types";
+import type { WorkOrder, Provider, RequirementSet, ClearanceAssessment, RegSource } from "@/lib/types";
+import type { TxStep } from "@/lib/txFlow";
 import PermitHeader from "@/components/PermitHeader";
 import RequirementSheet from "@/components/RequirementSheet";
 import ClearanceStamp from "@/components/ClearanceStamp";
+import SourceListEditor from "@/components/SourceListEditor";
+import TxProgress from "@/components/TxProgress";
 
 export default function ProviderWorkDetailPage({
   params,
@@ -17,7 +21,13 @@ export default function ProviderWorkDetailPage({
   params: Promise<{ id: string; workId: string }>;
 }) {
   const { id: providerId, workId } = use(params);
-  const { readClient } = useWallet();
+  const { status, address, writeClient, readClient } = useWallet();
+
+  const [credSources, setCredSources] = useState<RegSource[]>([{ url: "", role: CREDENTIAL_ROLES[0] }]);
+  const [credStep, setCredStep] = useState<TxStep>("IDLE");
+  const [credTxHash, setCredTxHash] = useState<string | null>(null);
+  const [credError, setCredError] = useState<string | null>(null);
+  const [credSubmitting, setCredSubmitting] = useState(false);
 
   const [workOrder, setWorkOrder] = useState<WorkOrder | null>(null);
   const [provider, setProvider] = useState<Provider | null>(null);
@@ -51,6 +61,9 @@ export default function ProviderWorkDetailPage({
         if (cancelled) return;
         setWorkOrder(wo);
         setProvider(prov);
+        if (prov.credential_sources && prov.credential_sources.length > 0) {
+          setCredSources(prov.credential_sources.map((s) => ({ ...s })));
+        }
 
         const rs =
           wo.requirement_version > 0 ? await contractReads.getRequirementSet(readClient, workId, 0) : null;
@@ -105,7 +118,34 @@ export default function ProviderWorkDetailPage({
     return () => cancel?.();
   }, [load]);
 
-  if (!isContractConfigured()) {
+  const configured = isContractConfigured();
+
+  async function onUpdateCredentials(e: React.FormEvent) {
+    e.preventDefault();
+    if (!writeClient || !address || !provider) return;
+    setCredSubmitting(true);
+    setCredError(null);
+    try {
+      await contractWrites.updateCredentials(
+        writeClient,
+        address,
+        providerId,
+        credSources,
+        provider.credential_version,
+        (s, detail) => {
+          setCredStep(s);
+          if (detail?.hash) setCredTxHash(detail.hash);
+        }
+      );
+      load();
+    } catch (err) {
+      setCredError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCredSubmitting(false);
+    }
+  }
+
+  if (!configured) {
     return (
       <p className="pg-card px-4 py-3 text-sm text-amber" role="status">
         Contract not configured. Set NEXT_PUBLIC_CONTRACT_ADDRESS to load clearance detail.
@@ -179,6 +219,42 @@ export default function ProviderWorkDetailPage({
           </div>
         </>
       )}
+
+      <div className="mt-8 pt-6 border-t border-line">
+        <h2 className="font-ident text-sm font-bold uppercase mb-2 text-ink-muted">Update credentials</h2>
+        <p className="text-sm text-ink-muted mb-3">
+          Submitting new credential evidence bumps this provider&apos;s credential version, which
+          immediately invalidates any existing assessment for this pair — it must be reassessed
+          before the assignment gate can open again.
+        </p>
+
+        {configured && status !== "connected" && (
+          <p className="pg-card px-4 py-3 text-sm text-amber mb-4" role="status">
+            Connect a wallet on GenLayer (chain 61999) to update credentials.
+          </p>
+        )}
+
+        <form onSubmit={onUpdateCredentials} className="space-y-3" data-testid="update-credentials-form">
+          <SourceListEditor sources={credSources} roles={CREDENTIAL_ROLES} onChange={setCredSources} max={8} />
+          <button
+            type="submit"
+            className="pg-btn"
+            disabled={
+              !configured ||
+              status !== "connected" ||
+              !writeClient ||
+              !address ||
+              credSubmitting ||
+              credSources.length === 0 ||
+              !credSources.every((s) => s.url.trim())
+            }
+          >
+            {credSubmitting ? "Submitting…" : "Update credentials"}
+          </button>
+        </form>
+
+        <TxProgress step={credStep} hash={credTxHash} errorMessage={credError} />
+      </div>
     </div>
   );
 }
