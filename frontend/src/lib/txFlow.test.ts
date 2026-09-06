@@ -156,7 +156,16 @@ describe("runWriteFlow", () => {
 
   it("normalizes a rejected signature request into WALLET_REJECTED", async () => {
     const steps: TxStep[] = [];
-    const submit = vi.fn().mockRejectedValue(new Error("User rejected the request."));
+    // A slow-enough rejection (plausibly a real deliberate click) — see the
+    // suspiciously-fast-rejection test below for the other branch. Mocks
+    // elapsed wall-clock time directly rather than actually waiting, so the
+    // test stays fast.
+    let now = 1000;
+    const dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const submit = vi.fn(async () => {
+      now += 5000;
+      throw new Error("User rejected the request.");
+    });
     await expect(
       runWriteFlow<unknown>({
         functionName: "register_provider",
@@ -171,6 +180,29 @@ describe("runWriteFlow", () => {
     });
     expect(submit).toHaveBeenCalledOnce();
     expect(steps).toContain("WALLET_REJECTED");
+    dateNowSpy.mockRestore();
+  });
+
+  // Regression test for a real observed pattern during live QA: a rejection
+  // reported near-instantly, with no wallet popup visibly appearing to the
+  // user — plausibly the wallet extension's own rate-limiting after a
+  // just-completed transaction, not a real deliberate click. This doesn't
+  // change the WALLET_REJECTED classification (still fail-safe, not
+  // retried automatically), only the message shown, so the user isn't
+  // misled into thinking they did something they didn't.
+  it("hints at possible wallet rate-limiting when rejection is reported almost instantly", async () => {
+    const submit = vi.fn().mockRejectedValue(new Error("User rejected the request."));
+    await expect(
+      runWriteFlow<unknown>({
+        functionName: "register_provider",
+        submit,
+        readback: async () => ({}),
+        verifyReadback: () => true,
+        pollIntervalMs: 0,
+      })
+    ).rejects.toMatchObject({
+      message: expect.stringContaining("rate-limiting"),
+    });
   });
 
   it("preserves the tx hash and reports FINALITY_TIMEOUT (not a resubmission) if finality is never reached", async () => {
