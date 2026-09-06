@@ -17,7 +17,7 @@ stated plainly rather than glossed over.
 | RPC | `https://studio.genlayer.com/api` |
 | Chain ID | `61999` (`0xf22f`) |
 | Explorer | https://explorer-studio.genlayer.com |
-| Final commit (at time of this report) | `e556ebf` |
+| Final commit (at time of this report) | `68ff232` |
 
 Three earlier contract addresses (`0x81780f7E10baa6450dc1D0d37B829B35a5850e34`,
 `0x28dcECD4011D9eb9C4Ab7234B38be364269fAac6`,
@@ -171,7 +171,7 @@ All commands below were actually run; output is summarized, not asserted.
   One test is an honest documented limit: a schema-valid "PASS everything" hostile output would
   pass through structurally — only real multi-validator disagreement (requiring a local
   GenLayer node) can catch that, which is out of scope for this environment.
-- Frontend (`frontend/`): `tsc --noEmit` clean, `eslint .` clean, `vitest run` — 54/54 tests
+- Frontend (`frontend/`): `tsc --noEmit` clean, `eslint .` clean, `vitest run` — 55/55 tests
   passing across 9 files, `next build` — all 8 routes compile cleanly.
 - `test/test_consensus_localnet.py` exists (real multi-validator lifecycle tests against a
   local GenLayer node) but does not run in this environment — no Docker/localnet is available
@@ -181,12 +181,31 @@ All commands below were actually run; output is summarized, not asserted.
 
 - No genuine `CLEARED` outcome has been demonstrated. Every real assessment run in this
   project correctly resolved to `INSUFFICIENT_EVIDENCE` because no demo provider was ever
-  given real, matching, publicly verifiable licence evidence — and none was fabricated to
-  force a different result.
+  given real, matching, publicly verifiable licence evidence. This is a **deliberate scope
+  boundary, not an unresolved bug**: producing one honestly would require either registering
+  a real company's real public licence record under this project's placeholder demo provider
+  identity (misrepresenting an unaffiliated real business's participation in a test) or
+  weakening the deterministic evidence/identity checks to fabricate a match — both explicitly
+  out of bounds for this project. The correct, safe way to eventually show a `CLEARED` path is
+  with a provider the operator directly controls and can supply real matching evidence for
+  through the ordinary product flow — not something to force in a QA session.
 - Full GenVM multi-validator hostile-content resistance is proven structurally (the
   deterministic layer cannot be talked into a false PASS by a compromised LLM output) but not
-  proven via a live multi-validator run, since that requires local GenLayer infrastructure not
-  available in this environment.
+  proven via a live multi-validator run. `test/test_consensus_localnet.py` exists for exactly
+  this but requires a local GenLayer node (`genlayer up`), which requires Docker — confirmed
+  in this environment via `genlayer --help` that no Docker-free "direct mode" execution path
+  exists in the installed CLI (only `up`, which needs Docker). This is a genuine environment
+  constraint, not a code gap.
+- During live QA, two wallet-signature rejections were reported by the app with no popup
+  visibly appearing to the user. Investigated directly against `genlayer-js`'s write path: it
+  does not silently issue a second wallet request on rejection (its ABI-fallback retry only
+  triggers on an actual ABI-mismatch error, never on rejection), so this was not traced to
+  PermitGrid's own code. The most plausible explanation is the wallet extension's own
+  rate-limiting/spam protection silently rejecting a request submitted too soon after a prior
+  one — stated as a hint, not a confirmed root cause, since it wasn't reproducible on demand.
+  The UI now detects a suspiciously-fast rejection (well under human reaction time) and
+  surfaces this possibility with guidance to wait and retry, rather than a plain rejection
+  message that could otherwise read as "you did something you didn't."
 - The demo regulatory source (a California contractor licensing classifications page) is a
   real public government page subject to change without notice, exactly as documented in the
   product's own stated limitations — this was observed directly during this project's own
@@ -194,7 +213,7 @@ All commands below were actually run; output is summarized, not asserted.
 
 ## 7. Reviewer-ready evidence index
 
-- Repository: https://github.com/lolaaa00/Permitgrid (commit `e556ebf`)
+- Repository: https://github.com/lolaaa00/Permitgrid (commit `68ff232`)
 - Live app: https://permitgrid-one.vercel.app
 - Diagnostics (resolved contract address/RPC/chain, inspectable by anyone): https://permitgrid-one.vercel.app/about
 - Contract: `0xD6cF90D8A4F7323B12EA4398A6AbDF415A4E9500` on GenLayer Studionet — inspect any
