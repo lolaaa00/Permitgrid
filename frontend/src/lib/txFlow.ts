@@ -207,6 +207,7 @@ export async function runWriteFlow<T>(args: RunWriteFlowArgs<T>): Promise<T> {
 
   emit("WALLET_REQUEST");
   emit("SUBMITTING");
+  const requestStartedAt = Date.now();
   let handle: TxHandle;
   try {
     handle = await submit();
@@ -214,7 +215,25 @@ export async function runWriteFlow<T>(args: RunWriteFlowArgs<T>): Promise<T> {
     const msg = err instanceof Error ? err.message : String(err);
     if (/user rejected|user denied|rejected the request/i.test(msg)) {
       emit("WALLET_REJECTED");
-      throw new TxFlowError("Signature request was rejected.", err);
+      // A rejection reported well under human reaction time (sending a
+      // request, having a wallet popup actually render, a person reading it,
+      // and clicking Reject) is very unlikely to be a deliberate click —
+      // observed in real testing right after a just-completed transaction,
+      // with no popup visibly appearing at all. The likely cause is the
+      // wallet extension's own rate-limiting/spam protection silently
+      // rejecting a request submitted too soon after the previous one, not
+      // this app's code — but that's a plausible explanation, not a
+      // confirmed root cause (it wasn't reproducible on demand), so this is
+      // stated as a hint, not asserted as fact. Real, deliberate rejections
+      // are unaffected — this only changes the message shown.
+      const elapsedMs = Date.now() - requestStartedAt;
+      const suspiciouslyFast = elapsedMs < 700;
+      throw new TxFlowError(
+        suspiciouslyFast
+          ? "Signature request was rejected almost instantly — if you didn't see or click anything in your wallet, this may be your wallet's own rate-limiting after a recent transaction rather than a real rejection. Wait a few seconds and try again."
+          : "Signature request was rejected.",
+        err
+      );
     }
     emit("ERROR");
     throw normalizeSubmitError(functionName, err);
