@@ -82,7 +82,21 @@ def _load_contract_module():
                 return fn
 
         class Contract:
-            pass
+            # Real GenVM auto-instantiates storage-typed (TreeMap/DynArray)
+            # class-annotated fields on an instance before `__init__` runs,
+            # so contract code can freely write to them from inside
+            # `__init__` (e.g. seeding a TreeMap). This fake stub replicates
+            # that via `__new__`, which always runs even when a subclass
+            # only defines its own `__init__`.
+            def __new__(cls):
+                obj = object.__new__(cls)
+                for klass in reversed(cls.__mro__):
+                    for name, type_obj in getattr(klass, "__annotations__", {}).items():
+                        if type_obj is _TreeMap:
+                            setattr(obj, name, _TreeMap())
+                        elif type_obj is DynArrayStub:
+                            setattr(obj, name, DynArrayStub())
+                return obj
 
         nondet = _nondet
         eq_principle = _eq_principle
@@ -136,18 +150,13 @@ pg = _load_contract_module()
 
 
 def _new_contract():
-    """A PermitGrid instance with storage fields manually initialized —
-    the fake `gl.Contract` base does no field auto-init, unlike real GenVM
-    storage descriptors."""
+    """A fresh PermitGrid instance. Storage-typed fields are auto-populated
+    by the fake `Contract.__new__` (mirroring real GenVM); this additionally
+    approves the `example.gov` domain used by this file's fixtures, since a
+    real contract only ever accepts sources from its admin-managed
+    approved-authority allowlist (see `_validate_sources`)."""
     c = pg.PermitGrid()
-    c.work_orders = {}
-    c.work_order_ids = []
-    c.work_order_sources = {}
-    c.requirement_history = {}
-    c.providers = {}
-    c.provider_ids = []
-    c.credential_history = {}
-    c.clearance_history = pg._TreeMap()
+    c.approved_domains["example.gov"] = True
     return c
 
 
@@ -401,3 +410,96 @@ def test_assess_provider_hostile_pass_everything_is_schema_valid():
     # Schema-valid PASS is accepted at this layer — the known, documented
     # limit of what a single mocked call can prove.
     assert assessment["clearance"] == "CLEARED"
+
+
+# ------------------------------------------ failed fetches never commit --
+
+
+def test_extract_requirements_aborts_on_fetch_failure_no_commit():
+    """A failed regulatory-source fetch must never produce a
+    clearance-relevant commitment: it raises (reverting the whole
+    transaction on real GenVM) rather than letting the LLM reason about a
+    '[FETCH_UNAVAILABLE: ...]' placeholder and potentially still commit a
+    requirement set derived from unavailable data."""
+    c = _new_contract()
+    _register_work_order(c)
+
+    def _raising_render(url, mode="text"):
+        raise RuntimeError("connection reset")
+
+    pg.gl.nondet.web.render = staticmethod(_raising_render)
+    pg.gl.nondet.exec_prompt = staticmethod(lambda task: BENIGN_REQUIREMENTS_JSON)
+
+    with pytest.raises(Exception, match="FETCH_UNAVAILABLE"):
+        c.extract_requirements("WO-1")
+
+    # No partial/corrupt state committed: still NEEDS_REQUIREMENTS, no
+    # requirement history entry.
+    wo = c.get_work_order("WO-1")
+    assert wo["status"] == "NEEDS_REQUIREMENTS"
+    assert wo["requirement_version"] == 0
+    assert c.get_requirement_history("WO-1") == []
+
+
+def test_assess_provider_aborts_on_fetch_failure_no_commit():
+    """Same principle for stage B: a failed credential-evidence fetch must
+    never produce a clearance-relevant commitment."""
+    c = _new_contract()
+    _register_work_order(c)
+    _extract_with_mock(c, "WO-1", BENIGN_REQUIREMENTS_JSON)
+    _register_provider(c)
+
+    def _raising_render(url, mode="text"):
+        raise RuntimeError("timeout")
+
+    pg.gl.nondet.web.render = staticmethod(_raising_render)
+    pg.gl.nondet.exec_prompt = staticmethod(lambda task: '{"items": []}')
+
+    with pytest.raises(Exception, match="FETCH_UNAVAILABLE"):
+        c.assess_provider("WO-1", "PRV-1")
+
+    # No assessment ever appended, gate stays closed.
+    assert c.get_clearance_history("WO-1", "PRV-1") == []
+    assert not c.is_provider_cleared("WO-1", "PRV-1", 1, 1)
+
+
+# --------------------------------- distinct same-type requirements survive --
+
+
+def test_extraction_equivalence_principle_preserves_distinct_same_type_requirements():
+    """Structural check: the comparative-equivalence principle text given
+    to consensus validators for extract_requirements must judge distinct
+    requirements by (type, target_value) and explicitly forbid collapsing
+    multiple requirements that share a `type` into one set entry — a work
+    scope can genuinely require two distinct LICENCE_CLASS requirements
+    (e.g. for different equipment), and both must be independently
+    preserved and verified rather than merged/dropped."""
+    src = inspect.getsource(pg.PermitGrid.extract_requirements)
+    assert "duplicates collapsed" not in src
+    assert "MULTISET" in src
+    assert "distinct requirement" in src
+    assert "never silently merged" in src or "must be independently preserved" in src
+
+
+def test_extract_requirements_commits_two_distinct_same_type_requirements():
+    """End-to-end (mocked single-call) proof that the actual committed data
+    keeps two distinct requirements of the same `type` as two separate
+    entries, not collapsed into one — this is enforced by the contract's
+    normalization code itself (which never deduplicates by type), and this
+    test guards against a future regression that would."""
+    c = _new_contract()
+    _register_work_order(c)
+    two_licence_classes_json = (
+        '{"requirements": ['
+        '{"requirement_id": "REQ-01", "type": "LICENCE_CLASS", "mandatory": true, '
+        '"target_value": "C-10 Electrical", "scope_summary": "wiring", "verification_target": "x"},'
+        '{"requirement_id": "REQ-02", "type": "LICENCE_CLASS", "mandatory": true, '
+        '"target_value": "C-20 HVAC", "scope_summary": "hvac", "verification_target": "y"}'
+        ']}'
+    )
+    _extract_with_mock(c, "WO-1", two_licence_classes_json)
+    rs = c.get_requirement_set("WO-1", 0)
+    types = [r["type"] for r in rs["requirements"]]
+    assert types.count("LICENCE_CLASS") == 2
+    targets = {r["target_value"] for r in rs["requirements"]}
+    assert targets == {"C-10 Electrical", "C-20 HVAC"}

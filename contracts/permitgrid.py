@@ -128,6 +128,12 @@ def _validate_enum(name: str, value: str, allowed: tuple) -> str:
     return value
 
 
+def _extract_host(url: str) -> str:
+    """Assumes `url` already passed the https/format checks below."""
+    rest = url[len("https://") :]
+    return rest.split("/")[0].split("?")[0].split(":")[0].lower()
+
+
 def _validate_url(url: str) -> str:
     """URL hardening. Best-effort, not a claim of
     complete SSRF protection — a runtime network policy layer is still the
@@ -150,9 +156,24 @@ def _validate_url(url: str) -> str:
     return url
 
 
+def _host_is_approved(host: str, approved_domains) -> bool:
+    """`host` matches an approved-authority domain if it equals one exactly
+    or is a subdomain of one (e.g. `licensing.cslb.ca.gov` matches an
+    approved `cslb.ca.gov`)."""
+    for domain in approved_domains:
+        if host == domain or host.endswith("." + domain):
+            return True
+    return False
+
+
 def _validate_sources(
-    raw_sources: list, allowed_roles: tuple, max_sources: int
+    raw_sources: list, allowed_roles: tuple, max_sources: int, approved_domains
 ) -> list:
+    """Every source URL must both pass general URL hardening AND resolve to
+    a host on the contract's approved-authority allowlist
+    (`approved_domains`, admin-managed — see `add_approved_domain`).
+    Regulatory/credential evidence is never accepted from an arbitrary,
+    unauthenticated internet host."""
     if not isinstance(raw_sources, list) or len(raw_sources) == 0:
         raise ValueError("at least one source is required")
     if len(raw_sources) > max_sources:
@@ -162,6 +183,11 @@ def _validate_sources(
     for item in raw_sources:
         url = _validate_url(item["url"])
         role = _validate_enum("source role", item["role"], allowed_roles)
+        host = _extract_host(url)
+        if not _host_is_approved(host, approved_domains):
+            raise ValueError(
+                f"source host '{host}' is not an approved regulatory/credential authority"
+            )
         if url in seen_urls:
             raise ValueError(f"duplicate source URL: {url}")
         seen_urls.add(url)
@@ -298,6 +324,18 @@ def _derive_clearance(requirements: list, items: list) -> str:
     PARTIAL on any other mandatory requirement type is treated as
     ADDITIONAL_CREDENTIAL_REQUIRED-grade, unless a higher-precedence
     condition already fired.
+
+    Two additional fail-closed rules, applied before the switch below:
+      - A `PASS` whose own `evidence_state` is not `SUFFICIENT` is a
+        self-contradictory validator output (claiming satisfaction while
+        admitting the evidence doesn't establish it) and is downgraded to
+        INSUFFICIENT_EVIDENCE rather than trusted as a real pass.
+      - A MANDATORY requirement can never be silently exempted via
+        `NOT_APPLICABLE` — "mandatory" and "not applicable" are
+        contradictory for the same requirement, so this is downgraded to
+        INSUFFICIENT_EVIDENCE too, rather than treated as satisfied.
+    (A non-mandatory requirement genuinely being NOT_APPLICABLE remains a
+    legitimate no-op.)
     """
     by_id = {r.requirement_id: r for r in requirements}
 
@@ -317,6 +355,11 @@ def _derive_clearance(requirements: list, items: list) -> str:
         if result == "CONFLICTING_EVIDENCE":
             has_conflict = True
             continue
+
+        if result == "PASS" and it.evidence_state != "SUFFICIENT":
+            result = "INSUFFICIENT_EVIDENCE"
+        elif mandatory and result == "NOT_APPLICABLE":
+            result = "INSUFFICIENT_EVIDENCE"
 
         if not mandatory:
             # Non-mandatory requirements can only ever add a SUPERVISION
@@ -388,9 +431,52 @@ class PermitGrid(gl.Contract):
     assessment_counter: u256
     work_order_counter: u256
 
+    admin: Address
+    approved_domains: TreeMap[str, bool]
+
     def __init__(self):
         self.assessment_counter = u256(0)
         self.work_order_counter = u256(0)
+        self.admin = gl.message.sender_address
+        # Seeded with the domain(s) actually verified against during this
+        # project's own real Studionet testing. The admin can extend this
+        # allowlist to other jurisdictions' authorities via
+        # `add_approved_domain` — regulatory/credential evidence is never
+        # accepted from an arbitrary, unauthenticated internet host.
+        self.approved_domains["cslb.ca.gov"] = True
+
+    # ------------------------------------------------------ admin/registry
+
+    def _require_admin(self) -> None:
+        if gl.message.sender_address != self.admin:
+            raise Exception("only the contract admin may perform this action")
+
+    @gl.public.write
+    def add_approved_domain(self, domain: str) -> None:
+        """Admin-only. Adds a domain (and its subdomains) to the approved
+        regulatory/credential-authority allowlist that every source URL
+        must resolve to (see `_validate_sources`)."""
+        self._require_admin()
+        domain = _bound_str("domain", domain, 253).lower()
+        if not re.fullmatch(
+            r"[a-z0-9]([a-z0-9\-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9\-]*[a-z0-9])?)+", domain
+        ):
+            raise ValueError("malformed domain")
+        self.approved_domains[domain] = True
+
+    @gl.public.write
+    def remove_approved_domain(self, domain: str) -> None:
+        """Admin-only. Removes a domain from the approved-authority
+        allowlist. Existing sources already registered against it are left
+        as-is; future registrations/updates citing it will be rejected."""
+        self._require_admin()
+        domain = _bound_str("domain", domain, 253).lower()
+        if domain in self.approved_domains:
+            del self.approved_domains[domain]
+
+    @gl.public.view
+    def list_approved_domains(self) -> list:
+        return sorted(list(self.approved_domains.keys()))
 
     # ---------------------------------------------------------------- utils
 
@@ -437,7 +523,7 @@ class PermitGrid(gl.Contract):
         environment = _bound_str("environment", environment, 200)
         role = _bound_str("role", role, 200)
         clean_sources = _validate_sources(
-            sources, SOURCE_ROLES, MAX_SOURCES_PER_WORK_ORDER
+            sources, SOURCE_ROLES, MAX_SOURCES_PER_WORK_ORDER, self.approved_domains
         )
 
         self.work_order_counter += 1
@@ -472,7 +558,7 @@ class PermitGrid(gl.Contract):
         if wo.creator != gl.message.sender_address:
             raise Exception("only the work order creator may update regulatory sources")
         clean_sources = _validate_sources(
-            sources, SOURCE_ROLES, MAX_SOURCES_PER_WORK_ORDER
+            sources, SOURCE_ROLES, MAX_SOURCES_PER_WORK_ORDER, self.approved_domains
         )
 
         wo.source_version += 1
@@ -508,10 +594,21 @@ class PermitGrid(gl.Contract):
         def extract() -> str:
             fetched = []
             for s in source_list:
+                # A failed fetch must never produce a clearance-relevant
+                # commitment: rather than substituting a placeholder that
+                # the LLM might reason around (or hallucinate requirements
+                # from), a fetch failure raises here, which aborts this
+                # entire nondeterministic block. GenVM reverts all state
+                # changes for a raised transaction, so no requirement set
+                # is ever committed from unavailable regulatory source
+                # data — this is a genuine technical failure, safe to
+                # retry, never a silent partial extraction.
                 try:
                     text = gl.nondet.web.render(s["url"], mode="text")
                 except Exception as e:
-                    text = f"[FETCH_UNAVAILABLE: {e}]"
+                    raise ValueError(
+                        f"FETCH_UNAVAILABLE: could not fetch regulatory source {s['url']}: {e}"
+                    )
                 fetched.append(
                     {"url": s["url"], "role": s["role"], "content": text[:6000]}
                 )
@@ -598,24 +695,33 @@ Respond with ONLY that JSON object, nothing else.
         raw = gl.eq_principle.prompt_comparative(
             extract,
             principle=(
-                "Compare only the material regulatory decision made in each "
-                "output: the SET of `type` values present (order-independent, "
-                "duplicates collapsed); for each `type` present in both "
-                "outputs, whether `mandatory` agrees; and for each `type` "
-                "present in both outputs, whether `target_value` names the "
+                "Compare the material regulatory decision made in each "
+                "output as a MULTISET of distinct requirements identified "
+                "by (`type`, normalized `target_value`) — do NOT collapse "
+                "requirements that share the same `type` into a single set "
+                "entry. If the work scope genuinely requires two or more "
+                "distinct requirements of the same `type` (e.g. two "
+                "separate LICENCE_CLASS requirements covering different "
+                "equipment or activities), each one is a distinct "
+                "requirement that must be independently preserved and "
+                "verified, never silently merged or dropped just because "
+                "another requirement shares its `type`. Two requirements "
+                "(one from each output) are the SAME requirement only if "
+                "their `type` matches AND their `target_value` denotes the "
                 "same underlying licence class/category/jurisdiction (treat "
                 "case, whitespace, abbreviation-vs-full-name, and reordering "
                 "as equivalent — e.g. 'C-10' and 'C10 Electrical' are "
                 "equivalent if they denote the same class; a materially "
                 "different class, category, or jurisdiction is NOT "
-                "equivalent). Two outputs are EQUIVALENT if the set of "
-                "requirement `type`s is the same (a validator may omit or "
-                "add at most one `type` versus another without disagreeing, "
-                "since source text length/truncation can vary), `mandatory` "
-                "agrees for every shared `type`, and `target_value` denotes "
-                "the same underlying category for every shared `type` that "
-                "has a non-empty `target_value` in both outputs. Do NOT "
-                "compare `scope_summary`, `verification_target`, "
+                "equivalent, even if the `type` matches). Two outputs are "
+                "EQUIVALENT if the multiset of distinct requirements they "
+                "name (by that type+target_value identity) matches, with "
+                "at most one requirement added or omitted overall (to "
+                "tolerate source text length/truncation variance — but no "
+                "requirement present in both outputs may be silently "
+                "dropped or merged into a different distinct requirement), "
+                "and `mandatory` agrees for every requirement present in "
+                "both. Do NOT compare `scope_summary`, `verification_target`, "
                 "`requirement_id`, sentence wording, ordering, or level of "
                 "explanatory detail — those are incidental and must be "
                 "ignored entirely."
@@ -687,7 +793,7 @@ Respond with ONLY that JSON object, nothing else.
         if provider.creator != gl.message.sender_address:
             raise Exception("only the provider creator may update credentials")
         clean_sources = _validate_sources(
-            sources, CREDENTIAL_ROLES, MAX_CREDENTIAL_SOURCES
+            sources, CREDENTIAL_ROLES, MAX_CREDENTIAL_SOURCES, self.approved_domains
         )
 
         history = self.credential_history[provider_id]
@@ -753,10 +859,18 @@ Respond with ONLY that JSON object, nothing else.
         def assess() -> str:
             fetched = []
             for s in cred_sources:
+                # Same principle as extraction: a failed credential-evidence
+                # fetch must never produce a clearance-relevant commitment.
+                # Raising here aborts the block and reverts all state for
+                # this transaction — no assessment, no clearance overwrite,
+                # no gate change — rather than letting the LLM assess
+                # against a placeholder string.
                 try:
                     text = gl.nondet.web.render(s["url"], mode="text")
                 except Exception as e:
-                    text = f"[FETCH_UNAVAILABLE: {e}]"
+                    raise ValueError(
+                        f"FETCH_UNAVAILABLE: could not fetch credential evidence {s['url']}: {e}"
+                    )
                 fetched.append(
                     {"url": s["url"], "role": s["role"], "content": text[:6000]}
                 )

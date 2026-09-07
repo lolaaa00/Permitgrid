@@ -50,7 +50,21 @@ def _load_contract_module():
                 return fn
 
         class Contract:
-            pass
+            # Real GenVM auto-instantiates storage-typed (TreeMap/DynArray)
+            # class-annotated fields on an instance before `__init__` runs,
+            # so contract code can freely write to them from inside
+            # `__init__` (e.g. seeding a TreeMap). This fake stub replicates
+            # that via `__new__`, which always runs even when a subclass
+            # only defines its own `__init__`.
+            def __new__(cls):
+                obj = object.__new__(cls)
+                for klass in reversed(cls.__mro__):
+                    for name, type_obj in getattr(klass, "__annotations__", {}).items():
+                        if type_obj is _TreeMap:
+                            setattr(obj, name, _TreeMap())
+                        elif type_obj is DynArrayStub:
+                            setattr(obj, name, DynArrayStub())
+                return obj
 
         @staticmethod
         def get_webpage(url, mode="text"):
@@ -128,8 +142,10 @@ def _req(rid, rtype, mandatory=True, target="X"):
     )
 
 
-def _item(rid, result):
-    return types.SimpleNamespace(requirement_id=rid, result=result)
+def _item(rid, result, evidence_state="SUFFICIENT"):
+    return types.SimpleNamespace(
+        requirement_id=rid, result=result, evidence_state=evidence_state
+    )
 
 
 # --------------------------------------------------------------- CLEARED --
@@ -146,10 +162,35 @@ def test_all_pass_yields_cleared():
     assert pg._derive_clearance(reqs, items) == "CLEARED"
 
 
-def test_not_applicable_does_not_block_cleared():
-    reqs = [_req("REQ-01", "LICENCE_STATUS"), _req("REQ-02", "SPECIAL_ENDORSEMENT")]
+def test_not_applicable_on_non_mandatory_does_not_block_cleared():
+    reqs = [
+        _req("REQ-01", "LICENCE_STATUS"),
+        _req("REQ-02", "SPECIAL_ENDORSEMENT", mandatory=False),
+    ]
     items = [_item("REQ-01", "PASS"), _item("REQ-02", "NOT_APPLICABLE")]
     assert pg._derive_clearance(reqs, items) == "CLEARED"
+
+
+def test_mandatory_not_applicable_fails_closed():
+    """A MANDATORY requirement can never be silently exempted via
+    NOT_APPLICABLE — 'mandatory' and 'not applicable' are contradictory for
+    the same requirement, so this must fail closed, never CLEARED."""
+    reqs = [_req("REQ-01", "LICENCE_STATUS"), _req("REQ-02", "SPECIAL_ENDORSEMENT")]
+    items = [_item("REQ-01", "PASS"), _item("REQ-02", "NOT_APPLICABLE")]
+    assert pg._derive_clearance(reqs, items) == "INSUFFICIENT_EVIDENCE"
+
+
+def test_pass_with_insufficient_evidence_state_fails_closed():
+    """A validator output claiming PASS while its own evidence_state admits
+    INSUFFICIENT is self-contradictory and must not be trusted as a real
+    pass — the deterministic layer downgrades it rather than the LLM's
+    result label alone deciding clearance."""
+    reqs = [_req("REQ-01", "LICENCE_STATUS"), _req("REQ-02", "COMPANY_REGISTRATION")]
+    items = [
+        _item("REQ-01", "PASS"),
+        _item("REQ-02", "PASS", evidence_state="INSUFFICIENT"),
+    ]
+    assert pg._derive_clearance(reqs, items) == "INSUFFICIENT_EVIDENCE"
 
 
 # --------------------------------------------------------- EXPIRED/SCOPE --
@@ -306,20 +347,89 @@ def test_validate_sources_rejects_duplicate_urls():
             ],
             pg.SOURCE_ROLES,
             8,
+            {"a.gov"},
         )
 
 
 def test_validate_sources_rejects_bad_role():
     with pytest.raises(ValueError):
         pg._validate_sources(
-            [{"url": "https://a.gov/x", "role": "NOT_A_ROLE"}], pg.SOURCE_ROLES, 8
+            [{"url": "https://a.gov/x", "role": "NOT_A_ROLE"}], pg.SOURCE_ROLES, 8, {"a.gov"}
         )
 
 
 def test_validate_sources_rejects_over_cap():
     sources = [{"url": f"https://a.gov/{i}", "role": "OTHER"} for i in range(10)]
     with pytest.raises(ValueError):
-        pg._validate_sources(sources, pg.SOURCE_ROLES, 8)
+        pg._validate_sources(sources, pg.SOURCE_ROLES, 8, {"a.gov"})
+
+
+# ------------------------------------------- approved-authority allowlist --
+
+
+def test_validate_sources_rejects_unapproved_host():
+    """Regulatory/credential evidence is never accepted from an arbitrary,
+    unauthenticated internet host — only hosts on the admin-managed
+    approved-authority allowlist."""
+    with pytest.raises(ValueError, match="not an approved"):
+        pg._validate_sources(
+            [{"url": "https://evil-attacker.example/rules", "role": "OTHER"}],
+            pg.SOURCE_ROLES,
+            8,
+            {"cslb.ca.gov"},
+        )
+
+
+def test_validate_sources_accepts_subdomain_of_approved_authority():
+    cleaned = pg._validate_sources(
+        [{"url": "https://licensing.cslb.ca.gov/rules", "role": "OTHER"}],
+        pg.SOURCE_ROLES,
+        8,
+        {"cslb.ca.gov"},
+    )
+    assert cleaned[0]["url"] == "https://licensing.cslb.ca.gov/rules"
+
+
+def test_validate_sources_rejects_lookalike_domain():
+    """A host that merely contains an approved domain as a substring (not a
+    true suffix match) must still be rejected — e.g. 'cslb.ca.gov.evil.com'
+    or 'notcslb.ca.gov' must not slip past the allowlist."""
+    with pytest.raises(ValueError, match="not an approved"):
+        pg._validate_sources(
+            [{"url": "https://cslb.ca.gov.evil.com/rules", "role": "OTHER"}],
+            pg.SOURCE_ROLES,
+            8,
+            {"cslb.ca.gov"},
+        )
+    with pytest.raises(ValueError, match="not an approved"):
+        pg._validate_sources(
+            [{"url": "https://notcslb.ca.gov/rules", "role": "OTHER"}],
+            pg.SOURCE_ROLES,
+            8,
+            {"cslb.ca.gov"},
+        )
+
+
+def test_add_and_remove_approved_domain_admin_only():
+    c = pg.PermitGrid()
+    assert "example.gov" not in c.approved_domains
+    c.add_approved_domain("Example.GOV")  # normalized to lowercase
+    assert "example.gov" in c.approved_domains
+    assert c.list_approved_domains() == ["cslb.ca.gov", "example.gov"]
+    c.remove_approved_domain("example.gov")
+    assert "example.gov" not in c.approved_domains
+
+
+def test_add_approved_domain_rejects_non_admin():
+    c = pg.PermitGrid()
+    c.admin = "0x000000000000000000000000000000000000ff"  # not the actual sender
+    with pytest.raises(Exception):
+        c.add_approved_domain("example.gov")
+
+
+# -------------------------------------------------- clearance derivation --
+# (deterministic policy tests continue below; see also the mandatory
+# NOT_APPLICABLE / PASS-with-insufficient-evidence tests above)
 
 
 def test_parse_json_object_strips_fences_and_extracts():

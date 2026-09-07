@@ -26,15 +26,22 @@ const STAMP_STYLE: Record<string, string> = {
   SUBMITTED: "border-blue text-blue",
 };
 
-const GATE_OPEN_STATES: (ClearanceState | string)[] = ["CLEARED"];
-
 interface ClearanceStampProps {
   clearance: ClearanceState | string;
+  /** The contract's own `is_provider_cleared(...)` result — the real,
+   * fail-closed, source-version-aware gate (it independently re-verifies
+   * requirement_version, source_version, and credential_version against
+   * current state, the same way any downstream consumer of this gate
+   * would). Required: `clearance === "CLEARED"` alone is NOT sufficient to
+   * show the gate as open, since a locally-known clearance state can be
+   * stale in ways the caller hasn't accounted for. `null` while the
+   * authoritative read is in flight or failed shows a neutral pending
+   * state rather than guessing open or closed. */
+  gateOpen: boolean | null;
 }
 
 /** Signature "clearance stamp" block, with the ASSIGNMENT GATE line. */
-export default function ClearanceStamp({ clearance }: ClearanceStampProps) {
-  const gateOpen = GATE_OPEN_STATES.includes(clearance);
+export default function ClearanceStamp({ clearance, gateOpen }: ClearanceStampProps) {
   const style = STAMP_STYLE[clearance] ?? "border-ink-muted text-ink-muted";
   const copy = STAMP_COPY[clearance] ?? clearance;
 
@@ -45,10 +52,13 @@ export default function ClearanceStamp({ clearance }: ClearanceStampProps) {
       <div className="font-ident text-lg font-bold uppercase">{copy}</div>
       <div className="font-ident text-xs mt-3 uppercase tracking-wide text-ink-muted">ASSIGNMENT GATE</div>
       <div
-        className={`font-ident text-base font-bold uppercase ${gateOpen ? "text-green" : "text-red"}`}
+        className={`font-ident text-base font-bold uppercase ${
+          gateOpen === null ? "text-ink-muted" : gateOpen ? "text-green" : "text-red"
+        }`}
         data-testid="assignment-gate"
+        data-gate-open={gateOpen === null ? "unknown" : String(gateOpen)}
       >
-        {gateOpen ? "OPEN" : "CLOSED"}
+        {gateOpen === null ? "CHECKING…" : gateOpen ? "OPEN" : "CLOSED"}
       </div>
     </div>
   );

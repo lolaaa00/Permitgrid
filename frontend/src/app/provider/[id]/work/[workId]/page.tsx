@@ -39,6 +39,12 @@ export default function ProviderWorkDetailPage({
   const [assessmentReadError, setAssessmentReadError] = useState<ReadError | null>(null);
   const [assessmentNotFound, setAssessmentNotFound] = useState(false);
   const [staleReason, setStaleReason] = useState<string | null>(null);
+  // Authoritative, not derived locally: the contract's own
+  // `is_provider_cleared(...)` is the fail-closed, source-version-aware
+  // gate — it also checks requirement_version and credential_version
+  // against current state internally. Never inferred from `staleReason`
+  // alone, which previously didn't account for source_version at all.
+  const [gateOpen, setGateOpen] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(() => isContractConfigured());
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -52,6 +58,7 @@ export default function ProviderWorkDetailPage({
     setLoadError(null);
     setAssessmentReadError(null);
     setAssessmentNotFound(false);
+    setGateOpen(null);
 
     Promise.all([
       contractReads.getWorkOrder(readClient, workId),
@@ -91,11 +98,31 @@ export default function ProviderWorkDetailPage({
         if (a) {
           if (rs && a.requirement_version < rs.version) {
             setStaleReason("Requirement version changed. Previous clearance is stale.");
+          } else if (a.source_version < wo.source_version) {
+            setStaleReason("Regulatory source configuration changed. Reassessment is required.");
           } else if (a.credential_version < prov.credential_version) {
             setStaleReason("Credential set changed. Reassessment is required.");
           } else {
             setStaleReason(null);
           }
+        }
+
+        // Authoritative fail-closed gate, read straight from the contract
+        // rather than re-derived client-side — this is the same check any
+        // downstream consumer (another contract, an assignment workflow)
+        // would use, and it independently re-verifies requirement_version,
+        // source_version, and credential_version against current state.
+        try {
+          const cleared = await contractReads.isProviderCleared(
+            readClient,
+            workId,
+            providerId,
+            wo.requirement_version,
+            prov.credential_version
+          );
+          if (!cancelled) setGateOpen(cleared);
+        } catch {
+          if (!cancelled) setGateOpen(null);
         }
       })
       .catch((err) => {
@@ -215,7 +242,10 @@ export default function ProviderWorkDetailPage({
           <RequirementSheet requirements={requirementSet?.requirements ?? []} items={assessment.items} />
 
           <div className="mt-6 max-w-sm">
-            <ClearanceStamp clearance={staleReason ? "STALE" : assessment.clearance} />
+            <ClearanceStamp
+              clearance={staleReason ? "STALE" : assessment.clearance}
+              gateOpen={staleReason ? false : gateOpen}
+            />
           </div>
         </>
       )}
