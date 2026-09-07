@@ -12,19 +12,22 @@ stated plainly rather than glossed over.
 |---|---|
 | Repository | https://github.com/lolaaa00/Permitgrid |
 | Production frontend | https://permitgrid-one.vercel.app |
-| Live contract | `0xD6cF90D8A4F7323B12EA4398A6AbDF415A4E9500` |
+| Live contract | `0x06B530fBbDE258F8F8632ca8b2376531B4804a7F` |
 | Network | GenLayer Studionet |
 | RPC | `https://studio.genlayer.com/api` |
 | Chain ID | `61999` (`0xf22f`) |
 | Explorer | https://explorer-studio.genlayer.com |
-| Final commit (at time of this report) | `68ff232` |
+| Final commit (at time of this report) | `d97aa98` |
 
-Three earlier contract addresses (`0x81780f7E10baa6450dc1D0d37B829B35a5850e34`,
+Four earlier contract addresses (`0x81780f7E10baa6450dc1D0d37B829B35a5850e34`,
 `0x28dcECD4011D9eb9C4Ab7234B38be364269fAac6`,
-`0x31015D7542e3d017B2Fb20080b8A18De635223C3`) exist on Studionet from earlier deploy
-iterations while root-causing on-chain issues. They remain live (Studionet contracts cannot be
-deleted) but are **abandoned/superseded** — the frontend and all current evidence point only
-at `0xD6cF90D8A4F7323B12EA4398A6AbDF415A4E9500`.
+`0x31015D7542e3d017B2Fb20080b8A18De635223C3`,
+`0xD6cF90D8A4F7323B12EA4398A6AbDF415A4E9500`) exist on Studionet from earlier deploy
+iterations. They remain live (Studionet contracts cannot be deleted) but are
+**abandoned/superseded** — the frontend and all current evidence point only at
+`0x06B530fBbDE258F8F8632ca8b2376531B4804a7F`, redeployed to address a team code review
+(approved-authority allowlist, fetch-failure hard-abort, fail-closed policy gaps, distinct
+requirement preservation — see section 8).
 
 ## 2. What PermitGrid actually does
 
@@ -211,12 +214,51 @@ All commands below were actually run; output is summarized, not asserted.
   product's own stated limitations — this was observed directly during this project's own
   testing when an earlier source URL went stale mid-session.
 
-## 7. Reviewer-ready evidence index
+## 8. Team code review — six fixes, verified live on redeployed contract
 
-- Repository: https://github.com/lolaaa00/Permitgrid (commit `68ff232`)
+A team review flagged six real gaps, addressed in commit `d97aa98` and verified against a
+redeployed contract (deploy tx `0xd4d4dfe87fa2f0f7c334b00d30ff8940c421b447e2e230abf3e2931413b915a9`,
+5/5 validators `AGREE`):
+
+1. **Approved-authority allowlist.** Regulatory/credential source URLs previously only got
+   generic SSRF/format hardening — any HTTPS host was accepted. Now every source must resolve
+   to an admin-managed approved-domain allowlist (seeded with `cslb.ca.gov`, extendable via
+   `add_approved_domain`, admin-only). Verified live both ways on the redeployed contract: a
+   registration citing an unapproved host reverted with `execution_result: ERROR` on 6/6
+   validators and committed nothing (`get_work_order` confirms it was never created); the same
+   registration against the approved domain succeeded with `SUCCESS` on 6/6 validators and
+   committed real state.
+2. **Failed fetches can no longer produce a clearance-relevant commitment.** Previously a
+   failed source fetch was silently substituted with a placeholder string and the LLM proceeded
+   anyway. Now a fetch failure raises immediately, aborting the transaction — GenVM reverts all
+   state changes, so no partial/hallucinated extraction or assessment is ever committed from
+   unavailable source data.
+3. **Two `_derive_clearance` fail-closed gaps closed.** A mandatory requirement can no longer
+   be silently exempted via `NOT_APPLICABLE` (downgraded to `INSUFFICIENT_EVIDENCE`), and a
+   `PASS` result whose own `evidence_state` admits `INSUFFICIENT` is no longer trusted as a real
+   pass.
+4. **Distinct requirements of the same type now survive consensus.** The extraction
+   equivalence principle previously judged agreement on the deduplicated *set* of requirement
+   types, which could let two genuinely distinct requirements sharing a type (e.g. two separate
+   `LICENCE_CLASS` requirements for different equipment) pass consensus without both being
+   independently verified. Rewritten to compare a multiset of (type, target_value) pairs.
+5. **The provider page's assignment gate is now the contract's real gate.** It previously
+   derived "open" purely from `clearance === "CLEARED"` client-side, and staleness detection
+   never checked `source_version` at all. It now reads `is_provider_cleared(...)` directly —
+   the same fail-closed, source-version-aware check any downstream consumer would use.
+6. Regression tests were added for every fix (approved-authority accept/reject/subdomain/
+   lookalike-domain/admin-only-management, fetch-failure-aborts-with-no-commit for both
+   consensus stages, mandatory-`NOT_APPLICABLE`/`PASS`-with-insufficient-evidence fail-closed,
+   distinct-same-type-requirement preservation, and a gate-vs-clearance-state test proving the
+   UI can no longer open the gate from clearance alone). Full suite after these changes: 48
+   Python + 57 frontend tests, all passing.
+
+## 9. Reviewer-ready evidence index
+
+- Repository: https://github.com/lolaaa00/Permitgrid (commit `d97aa98`)
 - Live app: https://permitgrid-one.vercel.app
 - Diagnostics (resolved contract address/RPC/chain, inspectable by anyone): https://permitgrid-one.vercel.app/about
-- Contract: `0xD6cF90D8A4F7323B12EA4398A6AbDF415A4E9500` on GenLayer Studionet — inspect any
+- Contract: `0x06B530fBbDE258F8F8632ca8b2376531B4804a7F` on GenLayer Studionet — inspect any
   transaction hash above at https://explorer-studio.genlayer.com/tx/`<hash>`
 - Full session-by-session build history with additional evidence: `HANDOFF.md` in the
   repository root.
