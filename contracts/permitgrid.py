@@ -22,6 +22,8 @@ the overall clearance directly.
 
 import json
 import re
+import unicodedata
+from collections import Counter
 from dataclasses import dataclass
 from genlayer import *
 
@@ -126,6 +128,87 @@ def _validate_enum(name: str, value: str, allowed: tuple) -> str:
     if value not in allowed:
         raise ValueError(f"{name} must be one of {allowed}")
     return value
+
+
+# --------------------------------------------------------------------------
+# Deterministic requirement-identity normalization (extraction consensus)
+# --------------------------------------------------------------------------
+#
+# Purely mechanical, deterministic, pure-Python string transforms — NO LLM
+# call and NO subjective/semantic matching ("abbreviation equivalence",
+# "same underlying category", etc.) is used anywhere in this normalization.
+# Two independent validators' extractions are judged equivalent only if
+# their normalized (type, mandatory, normalized_target) multisets are an
+# EXACT match — see `_canonical_requirement_multiset` and the
+# `prompt_comparative` principle in `extract_requirements`.
+
+
+def _normalize_type(type_value: str) -> str:
+    """Deterministic type normalization: Unicode NFKC, strip, uppercase.
+    Does not attempt to map an out-of-enum value to a known type — that
+    validation/coercion happens separately in `extract_requirements`, before
+    this function is ever called. This function only makes an already-valid
+    enum string comparison-stable."""
+    value = unicodedata.normalize("NFKC", str(type_value))
+    return value.strip().upper()
+
+
+def _normalize_target(target_value: str) -> str:
+    """Deterministic target-value normalization for consensus comparison
+    ONLY. The original `target_value` is always preserved unchanged for
+    storage and UI/audit display — this function's output is never stored,
+    only used as part of the (type, mandatory, normalized_target) identity
+    triple compared across validators.
+
+    Transform, in order, all purely mechanical (no semantic judgment):
+      1. Unicode normalization to NFKC (canonicalizes compatibility
+         characters/width variants/composed vs. decomposed accents to one
+         form, so visually-identical text compares equal).
+      2. Casefold (Unicode-aware case-insensitive comparison — stricter and
+         more correct than `.upper()`/`.lower()` for non-ASCII text).
+      3. Strip leading/trailing whitespace.
+      4. Collapse any run of internal whitespace (spaces, tabs, newlines) to
+         a single ASCII space.
+    Does NOT: expand abbreviations, map synonyms, strip punctuation, or make
+    any judgment about whether two differently-worded strings "mean the
+    same thing" — 'C-10' and 'C10 Electrical' are NOT normalized to the same
+    value by this function, and are therefore NOT the same requirement
+    identity for consensus purposes."""
+    value = unicodedata.normalize("NFKC", str(target_value))
+    value = value.casefold().strip()
+    return re.sub(r"\s+", " ", value)
+
+
+def _requirement_identity_triple(req: dict) -> tuple:
+    """The exact (type, mandatory, normalized_target) identity triple used
+    for consensus comparison. `mandatory` is part of the identity, not an
+    incidental field — two otherwise-identical requirements that disagree
+    on `mandatory` are NOT the same requirement for consensus purposes."""
+    return (
+        _normalize_type(req["type"]),
+        bool(req["mandatory"]),
+        _normalize_target(req["target_value"]),
+    )
+
+
+def _canonical_requirement_multiset(reqs: list) -> list:
+    """Builds the exact, order-independent, cardinality-preserving multiset
+    of requirement identities used for extraction consensus. Duplicate
+    identity triples are preserved and counted (via `collections.Counter`),
+    never deduplicated — two occurrences of the same (type, mandatory,
+    normalized_target) triple in the input produce a count of 2 in the
+    output, not a single collapsed entry. The result is sorted into a
+    single canonical order so the same multiset always serializes to the
+    same JSON regardless of the original requirement ordering, which is
+    what makes an exact-match/no-tolerance-threshold comparison possible."""
+    counts = Counter(_requirement_identity_triple(r) for r in reqs)
+    return sorted(
+        [
+            {"type": t, "mandatory": m, "normalized_target": nt, "count": c}
+            for (t, m, nt), c in counts.items()
+        ],
+        key=lambda e: (e["type"], e["mandatory"], e["normalized_target"]),
+    )
 
 
 def _extract_host(url: str) -> str:
@@ -690,41 +773,52 @@ Respond with ONLY that JSON object, nothing else.
                         ],
                     }
                 )
-            return json.dumps({"requirements": normalized}, sort_keys=True)
+            # `consensus_key` is the ONLY field the equivalence principle
+            # below is instructed to compare. It is built by pure
+            # deterministic Python (see `_canonical_requirement_multiset`)
+            # from (type, mandatory, normalized_target) — no LLM judgment,
+            # no semantic/abbreviation matching, exact multiset equality
+            # with cardinality preserved. All other fields (original
+            # target_value, scope_summary, verification_target,
+            # requirement_id) are preserved verbatim for storage/display
+            # and are explicitly OUT of comparison scope.
+            consensus_key = _canonical_requirement_multiset(normalized)
+            return json.dumps(
+                {"requirements": normalized, "consensus_key": consensus_key},
+                sort_keys=True,
+            )
 
         raw = gl.eq_principle.prompt_comparative(
             extract,
             principle=(
-                "Compare the material regulatory decision made in each "
-                "output as a MULTISET of distinct requirements identified "
-                "by (`type`, normalized `target_value`) — do NOT collapse "
-                "requirements that share the same `type` into a single set "
-                "entry. If the work scope genuinely requires two or more "
-                "distinct requirements of the same `type` (e.g. two "
-                "separate LICENCE_CLASS requirements covering different "
-                "equipment or activities), each one is a distinct "
-                "requirement that must be independently preserved and "
-                "verified, never silently merged or dropped just because "
-                "another requirement shares its `type`. Two requirements "
-                "(one from each output) are the SAME requirement only if "
-                "their `type` matches AND their `target_value` denotes the "
-                "same underlying licence class/category/jurisdiction (treat "
-                "case, whitespace, abbreviation-vs-full-name, and reordering "
-                "as equivalent — e.g. 'C-10' and 'C10 Electrical' are "
-                "equivalent if they denote the same class; a materially "
-                "different class, category, or jurisdiction is NOT "
-                "equivalent, even if the `type` matches). Two outputs are "
-                "EQUIVALENT if the multiset of distinct requirements they "
-                "name (by that type+target_value identity) matches, with "
-                "at most one requirement added or omitted overall (to "
-                "tolerate source text length/truncation variance — but no "
-                "requirement present in both outputs may be silently "
-                "dropped or merged into a different distinct requirement), "
-                "and `mandatory` agrees for every requirement present in "
-                "both. Do NOT compare `scope_summary`, `verification_target`, "
-                "`requirement_id`, sentence wording, ordering, or level of "
-                "explanatory detail — those are incidental and must be "
-                "ignored entirely."
+                "This is a MECHANICAL exact-match check, not a semantic or "
+                "subjective judgment. Compare ONLY the `consensus_key` field "
+                "of each output — ignore `requirements`, `target_value`, "
+                "`scope_summary`, `verification_target`, `requirement_id`, "
+                "and everything else entirely; those are display-only "
+                "fields already excluded from comparison by construction. "
+                "`consensus_key` is a list of objects, each with `type`, "
+                "`mandatory`, `normalized_target`, and `count`, already "
+                "fully normalized by deterministic code (Unicode NFKC, "
+                "casefold, whitespace-collapsed) before you see it — do NOT "
+                "apply any additional normalization, abbreviation "
+                "expansion, or 'same underlying category' reasoning "
+                "yourself. Two outputs are EQUIVALENT if and only if their "
+                "`consensus_key` lists, treated as sets of entries "
+                "(order does not matter — the position of entries in the "
+                "list is irrelevant), are IDENTICAL: same number of "
+                "entries, and every entry in one list has an exactly "
+                "matching entry in the other list with the same `type` "
+                "string, the same `mandatory` boolean, the same "
+                "`normalized_target` string (character-for-character), and "
+                "the same `count` integer. There is NO tolerance for a "
+                "missing entry, an extra entry, a `count` mismatch (a "
+                "duplicate requirement present once on one side and twice "
+                "on the other is a DISAGREEMENT), a `mandatory` mismatch, "
+                "or any difference in `normalized_target` however small — "
+                "vote NOT equivalent for any such difference, with no "
+                "exceptions for 'close enough' or 'materially similar' "
+                "target values."
             ),
         )
         parsed = json.loads(raw)

@@ -354,7 +354,10 @@ def test_validate_sources_rejects_duplicate_urls():
 def test_validate_sources_rejects_bad_role():
     with pytest.raises(ValueError):
         pg._validate_sources(
-            [{"url": "https://a.gov/x", "role": "NOT_A_ROLE"}], pg.SOURCE_ROLES, 8, {"a.gov"}
+            [{"url": "https://a.gov/x", "role": "NOT_A_ROLE"}],
+            pg.SOURCE_ROLES,
+            8,
+            {"a.gov"},
         )
 
 

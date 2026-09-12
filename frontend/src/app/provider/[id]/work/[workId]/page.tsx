@@ -6,6 +6,7 @@ import { useWallet } from "@/lib/wallet";
 import { contractReads, contractWrites } from "@/lib/contract";
 import { isContractConfigured } from "@/lib/config";
 import { NotFoundError, ReadError } from "@/lib/readClient";
+import { evaluateRequirementSet, type RequirementSetStatus } from "@/lib/requirementSetValidity";
 import { CREDENTIAL_ROLES } from "@/lib/types";
 import type { WorkOrder, Provider, RequirementSet, ClearanceAssessment, RegSource } from "@/lib/types";
 import type { TxStep } from "@/lib/txFlow";
@@ -21,6 +22,14 @@ export default function ProviderWorkDetailPage({
   params: Promise<{ id: string; workId: string }>;
 }) {
   const { id: providerId, workId } = use(params);
+  return <ProviderWorkDetailView providerId={providerId} workId={workId} />;
+}
+
+/** All actual page logic, taking `providerId`/`workId` directly rather
+ * than the route's params Promise — kept separate purely so it can be
+ * rendered/tested without needing a Suspense boundary around `use()`. No
+ * behavior difference from the default export above. */
+export function ProviderWorkDetailView({ providerId, workId }: { providerId: string; workId: string }) {
   const { status, address, writeClient, readClient } = useWallet();
 
   const [credSources, setCredSources] = useState<RegSource[]>([{ url: "", role: CREDENTIAL_ROLES[0] }]);
@@ -32,6 +41,8 @@ export default function ProviderWorkDetailPage({
   const [workOrder, setWorkOrder] = useState<WorkOrder | null>(null);
   const [provider, setProvider] = useState<Provider | null>(null);
   const [requirementSet, setRequirementSet] = useState<RequirementSet | null>(null);
+  const [rsStatus, setRsStatus] = useState<RequirementSetStatus>("NONE");
+  const [rsReadError, setRsReadError] = useState<ReadError | null>(null);
   const [assessment, setAssessment] = useState<ClearanceAssessment | null>(null);
   // Distinct from "no assessment exists": a genuine RPC/read failure while
   // fetching the assessment. Must never be silently converted into
@@ -56,13 +67,14 @@ export default function ProviderWorkDetailPage({
 
     setLoading(true);
     setLoadError(null);
+    setRsReadError(null);
     setAssessmentReadError(null);
     setAssessmentNotFound(false);
     setGateOpen(null);
 
     Promise.all([
-      contractReads.getWorkOrder(readClient, workId),
-      contractReads.getProvider(readClient, providerId),
+      contractReads.getWorkOrder(readClient, workId, true),
+      contractReads.getProvider(readClient, providerId, true),
     ])
       .then(async ([wo, prov]) => {
         if (cancelled) return;
@@ -72,9 +84,24 @@ export default function ProviderWorkDetailPage({
           setCredSources(prov.credential_sources.map((s) => ({ ...s })));
         }
 
-        const rs =
-          wo.requirement_version > 0 ? await contractReads.getRequirementSet(readClient, workId, 0) : null;
+        let rs: RequirementSet | null = null;
+        let evaluated: RequirementSetStatus = "NONE";
+        if (wo.requirement_version > 0) {
+          try {
+            const fetched = await contractReads.getRequirementSet(readClient, workId, 0, true);
+            evaluated = evaluateRequirementSet(wo, fetched);
+            // Only ever render a requirement set proven current — never
+            // retain a stale one visually after a source update or failed
+            // extraction, even though the read itself succeeded.
+            rs = evaluated === "CURRENT" ? fetched : null;
+          } catch (err) {
+            if (!cancelled) {
+              setRsReadError(err instanceof ReadError ? err : new ReadError(String(err), "UNKNOWN", true, err));
+            }
+          }
+        }
         if (cancelled) return;
+        setRsStatus(evaluated);
         setRequirementSet(rs);
 
         let a: ClearanceAssessment | null = null;
@@ -96,7 +123,14 @@ export default function ProviderWorkDetailPage({
         setAssessment(a);
 
         if (a) {
-          if (rs && a.requirement_version < rs.version) {
+          if (evaluated !== "CURRENT") {
+            // The requirement definitions themselves are no longer
+            // current (source update, or an earlier extraction never
+            // completed) — this always overrides any other staleness
+            // signal, since the assessment was necessarily computed
+            // against a requirement set that is no longer the active one.
+            setStaleReason("No current requirement set exists. Reassessment is required after extraction.");
+          } else if (rs && a.requirement_version < rs.version) {
             setStaleReason("Requirement version changed. Previous clearance is stale.");
           } else if (a.source_version < wo.source_version) {
             setStaleReason("Regulatory source configuration changed. Reassessment is required.");
@@ -211,6 +245,25 @@ export default function ProviderWorkDetailPage({
         <Field label="Assessment" value={assessment ? String(assessment.assessment_id).padStart(3, "0") : "—"} />
       </dl>
 
+      {rsReadError && (
+        <p className="pg-card px-4 py-3 text-sm text-red mb-4" role="alert" data-testid="requirement-read-error">
+          Could not read the requirement set: {rsReadError.message}{" "}
+          <button type="button" className="underline underline-offset-2" onClick={() => load()}>
+            Retry
+          </button>
+        </p>
+      )}
+
+      {!rsReadError && rsStatus === "NONE" && !assessment && (
+        <p
+          className="pg-card px-4 py-3 text-sm text-ink-muted mb-4"
+          data-testid="requirement-set-none"
+          data-rs-status={rsStatus}
+        >
+          No current requirement set exists for this work order yet.
+        </p>
+      )}
+
       {staleReason && (
         <p className="pg-card px-4 py-3 text-sm text-amber mb-4" role="status" data-testid="stale-banner">
           {staleReason}
@@ -227,12 +280,19 @@ export default function ProviderWorkDetailPage({
         </p>
       )}
 
-      {assessmentNotFound && !assessment && (
+      {assessmentNotFound && !assessment && rsStatus === "CURRENT" && (
         <p className="pg-card px-4 py-3 text-sm text-ink-muted mb-6" data-testid="no-assessment">
           No assessment on file for this provider against this work order yet.{" "}
           <Link href="/clearance/new" className="underline underline-offset-2">
             Run one →
           </Link>
+        </p>
+      )}
+
+      {assessmentNotFound && !assessment && rsStatus !== "CURRENT" && (
+        <p className="pg-card px-4 py-3 text-sm text-ink-muted mb-6" data-testid="assessment-unavailable">
+          A clearance assessment cannot be run until a current requirement set exists for this work
+          order.
         </p>
       )}
 

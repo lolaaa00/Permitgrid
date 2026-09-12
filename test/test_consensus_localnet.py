@@ -110,7 +110,12 @@ def test_non_https_source_rejected():
             "scope",
             "industrial facility",
             "contractor",
-            [{"url": "http://insecure.example.gov/registry", "role": "LICENSING_AUTHORITY"}],
+            [
+                {
+                    "url": "http://insecure.example.gov/registry",
+                    "role": "LICENSING_AUTHORITY",
+                }
+            ],
         ]
     )
     assert tx_execution_failed(result)
