@@ -1176,3 +1176,114 @@ only changes, consistent with every prior session's parity check.
   a stale cached bundle vs. a genuinely older deployment — no server-side
   logging/analytics was available to check which deployment their browser
   was actually pointed at when the bug occurred.
+
+## Session — second team review round: exact-multiset extraction consensus,
+## requirement-set validity gating, honest Studionet deployment blocker
+
+**Git**: commit `0d8125bc5c37e482d57f18f2d9c02043a6ceb7ee` on `main`, pushed. Contract source
+SHA-256 at this commit: `ada0c78fb8bef8e583c0ec6535b7f0869b952f1919b4172017d2f1b2d78ce81a`.
+
+A second team review of `contracts/permitgrid.py` flagged four real gaps plus a stale-commit-
+reference issue. All four are fixed, tested, committed, and pushed:
+
+1. Removed the "at most one requirement added or omitted overall" tolerance from the
+   extraction equivalence principle entirely. Consensus now requires an exact match of the
+   multiset of `(type, mandatory, normalized_target)` identity triples.
+2. `mandatory` is now part of the compared identity, not incidental.
+3. Added deterministic, unit-tested, pure-Python normalization (`_normalize_type`,
+   `_normalize_target` — Unicode NFKC, casefold, whitespace-collapse only, explicitly no
+   abbreviation/semantic matching) and a cardinality-preserving canonical multiset builder
+   (`_canonical_requirement_multiset`, via `collections.Counter`). The extraction output now
+   embeds a `consensus_key` field built this way; the `prompt_comparative` principle instructs
+   the LLM comparator to do an exact, mechanical multiset-equality check on that single field
+   only, explicitly excluding all display-only fields and forbidding any tolerance.
+4. Inspected the actual installed GenLayer runtime's `eq_principle` module
+   (`strict_eq`/`prompt_comparative`/`prompt_non_comparative`) before choosing this design —
+   `strict_eq`'s whole-return-value equality isn't usable here since legitimate free-text
+   fields (`scope_summary`, `requirement_id`) vary per independent LLM call even when the
+   underlying extraction is correct.
+5. Frontend: added `frontend/src/lib/requirementSetValidity.ts`, the single shared check
+   (`status === REQUIREMENTS_ACTIVE && version matches && source_version matches`) both the
+   work-order and provider/work pages now use before ever treating a fetched `RequirementSet`
+   as current. Previously both pages rendered a requirement set based solely on
+   `requirement_version > 0`, never checking work-order status or `source_version` — so a set
+   invalidated by a source update (which bumps `source_version` and flips `status` away from
+   `REQUIREMENTS_ACTIVE` without touching `requirement_version`) still displayed as if current.
+   Both pages now distinguish NONE/CURRENT/STALE/retryable-read-error, hide the downstream
+   "run assessment" action when no current set exists, and on the provider/work page force the
+   displayed clearance to STALE and the gate to CLOSED whenever the requirement set isn't
+   current — even if the stored assessment record itself says CLEARED.
+6. Both page components were split into a thin params-unwrapping default export plus an
+   exported inner view component taking plain props (`WorkOrderDetailView`,
+   `ProviderWorkDetailView`), purely so they're testable without a Suspense boundary around
+   React's `use()`. No behavior difference.
+
+**New tests**: `test/test_extraction_exact_consensus.py` (14 tests) — a faithful two-call
+consensus-comparison seam that genuinely calls the real `extract()` closure twice (leader, then
+an independent validator) with different queued LLM outputs, then applies the exact same
+mechanical multiset-equality check the real principle demands on the real `consensus_key` field
+both calls computed. This is possible specifically because the comparison is now deterministic.
+Covers all 9 scenarios from the review (leader-has-more/validator-has-more/different-target/
+different-mandatory/duplicate-count-mismatch/reordered-converges/incidental-fields-differ-
+converges/full-clean-state-after-disagreement/source-update-invalidates-until-replaced), plus
+normalization unit tests. Frontend: `requirementSetValidity.test.ts` (6) plus 9+5 page-level
+tests for the two routes (source-version-mismatch-clears, non-active-status-clears,
+requirement-version-mismatch-clears, retryable-read-failure-distinct-from-empty,
+downstream-action-unavailable, fail-closed-despite-stored-CLEARED, etc).
+
+**Verification, exact commands and results**:
+```
+$ .venv/bin/python -m pytest test/ -q --ignore=test/test_consensus_localnet.py
+62 passed in 0.16s
+$ .venv/bin/python -m pytest test/test_consensus_localnet.py -q
+5 failed in 1.41s   # ConnectionRefusedError to 127.0.0.1:4000 — no Docker, known limitation
+$ .venv/bin/python -m black --check contracts/ test/
+All done! 7 files would be left unchanged.
+$ .venv/bin/python -m flake8 contracts/permitgrid.py --max-line-length=100 --extend-ignore=E203,F403,F405
+(clean)
+$ cd frontend && npx tsc --noEmit && npx eslint . && npx vitest run && npx next build
+tsc: clean. eslint: clean. vitest: 77 passed (12 files). next build: all 8 routes compiled.
+```
+
+**Deployment — genuinely attempted, genuinely did not succeed, not fabricated**:
+
+`genlayer deploy --contract contracts/permitgrid.py --rpc https://studio.genlayer.com/api` was
+run four times, each finalizing `Undetermined` with `result_name: 'NO_MAJORITY'`,
+`votes_committed: '0'`, `votes_revealed: '0'` — no validator ever activated the transaction.
+Tx hashes: `0x34d2ad23156b8c190acea84c59a3ca58403139dffbd7ff0cbc1fe3b741da742e`,
+`0xeea1f2728b412c0316854ca60e56bf3ad18a1cb322a6002c890498fec3a11c30`,
+`0x4500d913314aaa8cdd0ff7987f9faa75bd336a07807422fe34ffdb4717799245`,
+`0xfcdd810a2fbd184e728e44ea46b4c3d5e2631ce9b431e3ec443152351d4baf5c`.
+
+Root-caused as a genuine, currently-live Studionet GenVM execution-layer issue, not a defect
+in this project's code:
+- An **unmodified stock sample contract** (`football_bets.py` from a fresh `genlayer new`,
+  never touched by this project) deployed to the same network with the same account failed
+  identically (tx `0x400c28b838400f3ddff1156175e7c6c9d13711d92c80537c48d9d4b1d3872e83`) — rules
+  out a PermitGrid-specific code defect conclusively.
+- A **plain read** against the previously-working, already-live contract
+  `0x06B530fBbDE258F8F8632ca8b2376531B4804a7F` (deployed and verified working in the prior
+  session) also failed at the same time with `execution_result: 'ERROR'` — not specific to
+  writes/deploys.
+- The **underlying JSON-RPC endpoint was confirmed healthy** at the same time
+  (`eth_chainId` → `0xf22f`, `eth_blockNumber` → advancing real block number via direct
+  `curl`) — narrows the fault to GenVM's consensus/validator execution layer specifically, not
+  network connectivity.
+- The deploying account (`probe`) was confirmed unlocked with a `10 GEN` balance throughout.
+- Retries were spaced across several minutes to allow for a transient condition to clear; it
+  had not cleared by the end of this session.
+
+**Net result**: the fixed contract source is committed and pushed at `0d8125b`, but the
+currently live, deployed, frontend-pointed-at contract remains
+`0x06B530fBbDE258F8F8632ca8b2376531B4804a7F` from the prior session — it does **not** yet
+contain this round's fixes. Source/deployed parity for `0d8125b` cannot be claimed until a
+deploy actually succeeds. Frontend env vars were correspondingly left unchanged this session
+(no new address to point at yet) — updating them now would have pointed production at a
+nonexistent contract.
+
+**To complete once Studionet's GenVM layer recovers**: retry
+`genlayer deploy --contract contracts/permitgrid.py --rpc https://studio.genlayer.com/api`
+(no code changes needed), verify with `genlayer schema <address> --rpc https://studio.genlayer.com/api`,
+update `NEXT_PUBLIC_CONTRACT_ADDRESS` in the `permitgrid` Vercel project's production
+environment, run `vercel deploy --prod --force --yes` from `frontend/`, verify `/about` shows
+the new address, then run a live browser-wallet test against it.

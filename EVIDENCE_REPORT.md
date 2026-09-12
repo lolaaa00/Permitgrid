@@ -6,28 +6,33 @@ a git commit, a live transaction hash on GenLayer Studionet, or a deployed URL. 
 is simulated or fabricated — where something could not be genuinely verified, that limit is
 stated plainly rather than glossed over.
 
-## 1. Canonical deployment
+## 1. Canonical deployment record
 
-| | |
+| Field | Value |
 |---|---|
 | Repository | https://github.com/lolaaa00/Permitgrid |
+| Branch | `main` |
+| **Full commit SHA (source of truth for this record)** | `0d8125bc5c37e482d57f18f2d9c02043a6ceb7ee` |
+| Commit pushed at | 2026-09-12T02:13Z (WAT, UTC+1) |
+| `contracts/permitgrid.py` SHA-256 **at this commit** | `ada0c78fb8bef8e583c0ec6535b7f0869b952f1919b4172017d2f1b2d78ce81a` |
 | Production frontend | https://permitgrid-one.vercel.app |
-| Live contract | `0x06B530fBbDE258F8F8632ca8b2376531B4804a7F` |
 | Network | GenLayer Studionet |
 | RPC | `https://studio.genlayer.com/api` |
 | Chain ID | `61999` (`0xf22f`) |
 | Explorer | https://explorer-studio.genlayer.com |
-| Final commit (at time of this report) | `d97aa98` |
 
-Four earlier contract addresses (`0x81780f7E10baa6450dc1D0d37B829B35a5850e34`,
+**Deployed contract address currently live: `0x06B530fBbDE258F8F8632ca8b2376531B4804a7F`,
+deployed from an EARLIER commit — see section 8 for the exact, currently-open gap between
+this address's on-chain source and the code at `0d8125b`.** Redeploying from `0d8125b` was
+genuinely attempted multiple times and did not succeed — documented honestly below rather
+than claimed.
+
+Four still-earlier contract addresses (`0x81780f7E10baa6450dc1D0d37B829B35a5850e34`,
 `0x28dcECD4011D9eb9C4Ab7234B38be364269fAac6`,
 `0x31015D7542e3d017B2Fb20080b8A18De635223C3`,
 `0xD6cF90D8A4F7323B12EA4398A6AbDF415A4E9500`) exist on Studionet from earlier deploy
-iterations. They remain live (Studionet contracts cannot be deleted) but are
-**abandoned/superseded** — the frontend and all current evidence point only at
-`0x06B530fBbDE258F8F8632ca8b2376531B4804a7F`, redeployed to address a team code review
-(approved-authority allowlist, fetch-failure hard-abort, fail-closed policy gaps, distinct
-requirement preservation — see section 8).
+iterations and remain live (Studionet contracts cannot be deleted) but are
+**abandoned/superseded**.
 
 ## 2. What PermitGrid actually does
 
@@ -162,23 +167,35 @@ explicitly out of bounds. The fail-closed behavior is itself the proof point.
 
 ## 5. Automated test evidence
 
-All commands below were actually run; output is summarized, not asserted.
+All commands below were actually run; output is summarized, not asserted. Figures are current
+as of commit `0d8125bc5c37e482d57f18f2d9c02043a6ceb7ee`.
 
-- Python deterministic unit tests (`test/test_clearance_policy.py`): 27/27 passing, covering
-  every deterministic clearance state and precedence rule.
-- Prompt-injection / identity-safety tests (`test/test_prompt_injection_resistance.py`): 10/10
-  passing — structural checks that the contract's extraction/assessment prompts instruct
-  treating fetched content as untrusted data, plus tests proving the deterministic
-  post-consensus layer rejects/neutralizes malformed or hostile LLM output (schema
-  enforcement, bounds, empty-set rejection, missing-item → `INSUFFICIENT_EVIDENCE` fallback).
-  One test is an honest documented limit: a schema-valid "PASS everything" hostile output would
-  pass through structurally — only real multi-validator disagreement (requiring a local
-  GenLayer node) can catch that, which is out of scope for this environment.
-- Frontend (`frontend/`): `tsc --noEmit` clean, `eslint .` clean, `vitest run` — 55/55 tests
-  passing across 9 files, `next build` — all 8 routes compile cleanly.
-- `test/test_consensus_localnet.py` exists (real multi-validator lifecycle tests against a
-  local GenLayer node) but does not run in this environment — no Docker/localnet is available
-  here. This is a stated, honest limitation, not a hidden gap.
+- Python deterministic tests: `test/test_clearance_policy.py` (34), `test/test_prompt_injection_resistance.py`
+  (14), `test/test_extraction_exact_consensus.py` (14, new — see section 7) — **62/62 passing**
+  via `.venv/bin/python -m pytest test/ -q --ignore=test/test_consensus_localnet.py`. Covers
+  every deterministic clearance-derivation state/precedence rule, prompt-injection/identity-
+  safety structural checks, deterministic target/type normalization, and a faithful two-call
+  exact-multiset consensus-comparison seam (leader vs. independent validator, exact equality
+  on the real `consensus_key` field — see section 7 for why this is possible without an LLM).
+  One test remains an honest documented limit: a schema-valid "PASS everything" hostile output
+  would pass through structurally — only real multi-validator disagreement (requiring a local
+  GenLayer node) can catch that, out of scope for this environment.
+- Frontend (`frontend/`): `tsc --noEmit` clean, `eslint .` clean, `vitest run` —
+  **77/77 tests passing** across 12 files (including new `requirementSetValidity.test.ts` and
+  page-level tests for both the work-order and provider/work views), `next build` — all 8
+  routes compile cleanly.
+- `test/test_consensus_localnet.py` (5 tests) exists (real multi-validator lifecycle tests
+  against a local GenLayer node) but does not run in this environment — no Docker/localnet is
+  available here. Confirmed via `python -m pytest test/ -q` (without the `--ignore`): these 5
+  fail with `ConnectionRefusedError` to `127.0.0.1:4000`, the same known, stated environment
+  limitation as every prior session — not a regression, not hidden.
+- `black --check contracts/ test/` and `flake8 contracts/permitgrid.py --extend-ignore=E203,F403,F405`
+  both clean (the ignored codes are the project's pre-existing, expected baseline: `F403`/`F405`
+  for the `from genlayer import *` star-import GenVM convention, `E203` for slice-whitespace
+  style black itself introduces). `genlayer schema <address>` is the only contract-inspection
+  command this CLI version exposes — it operates on an already-deployed address, so it is not a
+  local static-lint step; no local GenVM/GenLayer lint tool beyond `black`/`flake8` exists in
+  this installed toolchain.
 
 ## 6. Known, honest limitations
 
@@ -213,6 +230,64 @@ All commands below were actually run; output is summarized, not asserted.
   real public government page subject to change without notice, exactly as documented in the
   product's own stated limitations — this was observed directly during this project's own
   testing when an earlier source URL went stale mid-session.
+
+## 7. Second team review round — contract fixes complete and pushed; live redeployment currently blocked by a genuine Studionet GenVM-layer outage
+
+A second review round (addressed at commit `0d8125bc5c37e482d57f18f2d9c02043a6ceb7ee`) required:
+removing the "at most one requirement added or omitted" tolerance from the extraction
+equivalence principle entirely and requiring an exact multiset match; including `mandatory` in
+the compared identity; gating the frontend's requirement-set rendering on
+`status === REQUIREMENTS_ACTIVE` and `source_version` matching (not just
+`requirement_version > 0`); and not referencing an unverifiable commit SHA. All of this is
+implemented, tested, committed, and pushed — see sections above and the commit itself for the
+full diff. What is **honestly not yet true**: this fixed contract source is not yet the one
+live on-chain at any deployed address, because redeployment was genuinely attempted and failed.
+
+**What was attempted, with evidence, not asserted:**
+
+- `genlayer deploy --contract contracts/permitgrid.py --rpc https://studio.genlayer.com/api`
+  was run four times. Every attempt finalized as `Undetermined`
+  (`result_name: 'NO_MAJORITY'`, `votes_committed: '0'`, `votes_revealed: '0'`,
+  `activator: ''`, `last_leader: ''`) — no validator ever picked up the transaction at all.
+  Transaction hashes: `0x34d2ad23156b8c190acea84c59a3ca58403139dffbd7ff0cbc1fe3b741da742e`,
+  `0xeea1f2728b412c0316854ca60e56bf3ad18a1cb322a6002c890498fec3a11c30`,
+  `0x4500d913314aaa8cdd0ff7987f9faa75bd336a07807422fe34ffdb4717799245`,
+  `0xfcdd810a2fbd184e728e44ea46b4c3d5e2631ce9b431e3ec443152351d4baf5c` (all inspectable at
+  `https://explorer-studio.genlayer.com/tx/<hash>`).
+- **Isolation test, to rule out a defect in this project's own code**: a completely unmodified
+  sample contract from a fresh `genlayer new` scaffold (`football_bets.py`, never touched by
+  this project) was deployed to the same network with the same account and failed identically
+  (tx `0x400c28b838400f3ddff1156175e7c6c9d13711d92c80537c48d9d4b1d3872e83`, same
+  `NO_MAJORITY`/zero-votes pattern). This is conclusive: the failure is not caused by anything
+  in `contracts/permitgrid.py`.
+- **A plain read against the previously-working, already-live contract**
+  (`0x06B530fBbDE258F8F8632ca8b2376531B4804a7F`, deployed and working in the prior session)
+  *also* failed at the same time, with `execution_result: 'ERROR'` — confirming this is not
+  specific to deployment/writes, but a broader GenVM execution-layer issue affecting reads too.
+- **The underlying JSON-RPC endpoint itself was confirmed healthy** at the same time:
+  `curl -X POST https://studio.genlayer.com/api -d '{"jsonrpc":"2.0","method":"eth_chainId",...}'`
+  correctly returned `0xf22f`, and `eth_blockNumber` returned an advancing real block number.
+  This narrows the fault specifically to GenVM's consensus/validator execution layer, not
+  network connectivity, not this account, and not this project's contract code.
+- The deployment account (`probe`, `0xaa18ecd158aec67c75a51768b747cb3247a21689`) was confirmed
+  unlocked with a `10 GEN` balance throughout — not a funding issue.
+- Retries were spaced across several minutes, not fired in a tight loop, to allow for a
+  transient condition to clear; it did not clear within the window available for this session.
+
+**What this means concretely:** the currently live, callable contract remains
+`0x06B530fBbDE258F8F8632ca8b2376531B4804a7F` (from the prior session, itself Studionet-verified
+working at the time), but it does **not** contain this round's fixes (exact-multiset
+consensus, `mandatory`-in-identity, no-tolerance principle). The frontend continues to point at
+that address. Source/deployed parity for commit `0d8125b` cannot honestly be claimed until a
+deploy actually succeeds.
+
+**To complete this**, once Studionet's GenVM layer recovers: run
+`genlayer deploy --contract contracts/permitgrid.py --rpc https://studio.genlayer.com/api`
+from commit `0d8125bc5c37e482d57f18f2d9c02043a6ceb7ee` (or later), verify with
+`genlayer schema <address> --rpc https://studio.genlayer.com/api`, update
+`NEXT_PUBLIC_CONTRACT_ADDRESS` in the `permitgrid` Vercel project's production environment,
+redeploy the frontend (`vercel deploy --prod --force --yes` from `frontend/`), and verify
+`/about` shows the new address before running a live browser-wallet test.
 
 ## 8. Team code review — six fixes, verified live on redeployed contract
 
@@ -255,10 +330,13 @@ redeployed contract (deploy tx `0xd4d4dfe87fa2f0f7c334b00d30ff8940c421b447e2e230
 
 ## 9. Reviewer-ready evidence index
 
-- Repository: https://github.com/lolaaa00/Permitgrid (commit `d97aa98`)
+- Repository: https://github.com/lolaaa00/Permitgrid (commit `0d8125bc5c37e482d57f18f2d9c02043a6ceb7ee`)
 - Live app: https://permitgrid-one.vercel.app
 - Diagnostics (resolved contract address/RPC/chain, inspectable by anyone): https://permitgrid-one.vercel.app/about
-- Contract: `0x06B530fBbDE258F8F8632ca8b2376531B4804a7F` on GenLayer Studionet — inspect any
-  transaction hash above at https://explorer-studio.genlayer.com/tx/`<hash>`
+- **Contract currently live and pointed at by the frontend**: `0x06B530fBbDE258F8F8632ca8b2376531B4804a7F`
+  on GenLayer Studionet — this is from the prior session and does not yet contain the
+  exact-multiset consensus / requirement-set-validity fixes described in section 7, which are
+  committed and pushed but not yet deployed (see section 7 for exactly why, with evidence).
+  Inspect any transaction hash above at https://explorer-studio.genlayer.com/tx/`<hash>`
 - Full session-by-session build history with additional evidence: `HANDOFF.md` in the
   repository root.
