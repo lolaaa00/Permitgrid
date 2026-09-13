@@ -1254,7 +1254,8 @@ Tx hashes: `0x34d2ad23156b8c190acea84c59a3ca58403139dffbd7ff0cbc1fe3b741da742e`,
 `0xeea1f2728b412c0316854ca60e56bf3ad18a1cb322a6002c890498fec3a11c30`,
 `0x4500d913314aaa8cdd0ff7987f9faa75bd336a07807422fe34ffdb4717799245`,
 `0xfcdd810a2fbd184e728e44ea46b4c3d5e2631ce9b431e3ec443152351d4baf5c`,
-  `0x6981ac2f79f2ae6c8beaa49ffcafe17a36c2a879b00fc3022afab1c868fb583b`.
+  `0x6981ac2f79f2ae6c8beaa49ffcafe17a36c2a879b00fc3022afab1c868fb583b`,
+  `0xd7bc3a082236171a78e0584a76fc318207cd0a69001fd79c51196861744672fc` (retried 2026-09-13, same NO_MAJORITY/zero-votes pattern — outage persisting across sessions).
 
 Root-caused as a genuine, currently-live Studionet GenVM execution-layer issue, not a defect
 in this project's code:
