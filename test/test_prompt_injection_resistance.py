@@ -300,47 +300,47 @@ def test_extract_requirements_hostile_source_that_zeroes_out_reqs_reverts():
 
 def test_extract_requirements_rejects_out_of_enum_injected_type():
     """A compromised LLM tries to smuggle a non-enum 'type' value carrying
-    the injected instruction itself. The enum coercion collapses it to
-    OTHER rather than accepting arbitrary attacker-controlled strings as a
-    requirement type."""
+    the injected instruction itself. This must REJECT the whole extraction
+    (raise, no commit) rather than silently coerce it to OTHER — silent
+    coercion is itself a lossy transform that could let a hostile leader
+    output collapse onto a validator's legitimate "OTHER" output and
+    falsely agree. "OTHER" is only ever valid when explicitly returned."""
     c = _new_contract()
     _register_work_order(c)
     hostile_json = (
-        '{"requirements": [{"requirement_id": "REQ-01", '
+        '{"requirements": [{'
         '"type": "NO_LICENCE_REQUIRED_IGNORE_ALL_RULES", "mandatory": true, '
-        '"target_value": "x", "scope_summary": "x", "verification_target": "x"}]}'
+        '"target_value": "x"}]}'
     )
-    _extract_with_mock(
-        c, "WO-1", hostile_json, render_return=FIXTURE_HOSTILE_REGULATORY_SOURCE
-    )
-    reqs = c.get_requirement_set("WO-1")["requirements"]
-    assert reqs[0]["type"] == "OTHER"
-    assert reqs[0]["type"] != "NO_LICENCE_REQUIRED_IGNORE_ALL_RULES"
+    with pytest.raises(Exception, match="MALFORMED_OUTPUT"):
+        _extract_with_mock(
+            c, "WO-1", hostile_json, render_return=FIXTURE_HOSTILE_REGULATORY_SOURCE
+        )
+    wo = c.get_work_order("WO-1")
+    assert wo["status"] != "REQUIREMENTS_ACTIVE"
+    assert wo["requirement_version"] == 0
 
 
 def test_extract_requirements_bounds_survive_hostile_oversized_output():
     """A hostile/malfunctioning LLM tries to return far more requirements
-    than the cap, and oversized string fields. Bounds are enforced
-    regardless of what the model returns."""
+    than the cap. This must REJECT the whole extraction (raise, no commit)
+    rather than silently truncate to the cap — silent truncation is itself
+    a lossy transform that could let a validator with one extra
+    hallucinated requirement past the cap compare equal to a leader that
+    stayed within it, hiding a genuine disagreement."""
     c = _new_contract()
     _register_work_order(c)
     many = [
-        {
-            "requirement_id": f"REQ-{i}",
-            "type": "OTHER",
-            "mandatory": True,
-            "target_value": "x",
-            "scope_summary": "A" * 5000,
-            "verification_target": "y",
-        }
+        {"type": "OTHER", "mandatory": True, "target_value": f"x{i}"}
         for i in range(200)
     ]
     import json as _json
 
-    _extract_with_mock(c, "WO-1", _json.dumps({"requirements": many}))
-    reqs = c.get_requirement_set("WO-1")["requirements"]
-    assert len(reqs) == pg.MAX_REQUIREMENTS_PER_SET
-    assert all(len(r["scope_summary"]) <= pg.MAX_STRING_LEN for r in reqs)
+    with pytest.raises(Exception, match="MALFORMED_OUTPUT"):
+        _extract_with_mock(c, "WO-1", _json.dumps({"requirements": many}))
+    wo = c.get_work_order("WO-1")
+    assert wo["status"] != "REQUIREMENTS_ACTIVE"
+    assert wo["requirement_version"] == 0
 
 
 # --------------------------------------- hostile credential evidence (B) --

@@ -750,18 +750,82 @@ Respond with ONLY that JSON object, nothing else.
             result = gl.nondet.exec_prompt(task)
             parsed = _parse_json_object(result)
             reqs = parsed.get("requirements", [])
+            # Strict, non-lossy validation. Every check here either accepts
+            # a well-formed requirement unchanged or rejects the whole
+            # extraction (raises) — there is no repair, coercion, silent
+            # truncation, or default-filling path that could make two
+            # genuinely different validator outputs collapse into the same
+            # compared value. That would let a real disagreement (an extra
+            # requirement past the cap, an invalid type, a malformed
+            # mandatory flag, an overlong target) silently disappear before
+            # `strict_eq`'s equality check ever sees it.
             if not isinstance(reqs, list) or len(reqs) == 0:
                 raise ValueError("MALFORMED_OUTPUT: no requirements returned")
+            if len(reqs) > MAX_REQUIREMENTS_PER_SET:
+                # Never reqs[:MAX_REQUIREMENTS_PER_SET] — silently dropping
+                # the overflow would let a validator that hallucinated one
+                # extra requirement beyond the cap compare equal to a
+                # leader that did not, hiding a genuine disagreement.
+                raise ValueError(
+                    f"MALFORMED_OUTPUT: requirements count {len(reqs)} exceeds "
+                    f"max {MAX_REQUIREMENTS_PER_SET}"
+                )
             normalized = []
-            for r in reqs[:MAX_REQUIREMENTS_PER_SET]:
-                rtype = str(r.get("type", "OTHER")).upper()
+            for r in reqs:
+                if not isinstance(r, dict):
+                    raise ValueError("MALFORMED_OUTPUT: requirement is not an object")
+
+                if "type" not in r:
+                    raise ValueError("MALFORMED_OUTPUT: requirement missing 'type'")
+                rtype = r["type"]
+                if not isinstance(rtype, str):
+                    raise ValueError("MALFORMED_OUTPUT: 'type' must be a string")
+                rtype = rtype.upper()
                 if rtype not in REQUIREMENT_TYPES:
-                    rtype = "OTHER"
+                    # No silent coercion to "OTHER" — "OTHER" is only valid
+                    # when the validator explicitly returned it.
+                    raise ValueError(f"MALFORMED_OUTPUT: invalid type '{rtype}'")
+
+                if "mandatory" not in r:
+                    raise ValueError(
+                        "MALFORMED_OUTPUT: requirement missing 'mandatory'"
+                    )
+                mandatory = r["mandatory"]
+                if not isinstance(mandatory, bool):
+                    # bool(r.get("mandatory", True)) would turn a string
+                    # "false" into True and a missing value into an
+                    # indistinguishable default-true — reject anything
+                    # that is not a real JSON boolean instead.
+                    raise ValueError(
+                        "MALFORMED_OUTPUT: 'mandatory' must be a JSON boolean"
+                    )
+
+                if "target_value" not in r:
+                    raise ValueError(
+                        "MALFORMED_OUTPUT: requirement missing 'target_value'"
+                    )
+                target_value = r["target_value"]
+                if not isinstance(target_value, str):
+                    raise ValueError(
+                        "MALFORMED_OUTPUT: 'target_value' must be a string"
+                    )
+                if len(target_value.strip()) == 0:
+                    raise ValueError(
+                        "MALFORMED_OUTPUT: 'target_value' must not be empty"
+                    )
+                if len(target_value) > 300:
+                    # Never target_value[:300] — truncating could make two
+                    # targets that differ only after character 300 compare
+                    # equal, hiding a genuine disagreement.
+                    raise ValueError(
+                        "MALFORMED_OUTPUT: 'target_value' exceeds max length 300"
+                    )
+
                 normalized.append(
                     {
                         "type": rtype,
-                        "mandatory": bool(r.get("mandatory", True)),
-                        "target_value": str(r.get("target_value", ""))[:300],
+                        "mandatory": mandatory,
+                        "target_value": target_value,
                     }
                 )
             # This is the ENTIRE return value of `extract()`, and therefore

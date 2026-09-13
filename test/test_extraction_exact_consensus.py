@@ -224,6 +224,12 @@ def _assert_no_commit(c, wo_id):
     assert c.get_requirement_history(wo_id) == []
 
 
+def _req_dict(rtype, target, mandatory=True):
+    """Like `_req`, but returns the raw dict (not JSON) so tests can build
+    a full requirements list programmatically before serializing."""
+    return {"type": rtype, "mandatory": mandatory, "target_value": target}
+
+
 # ---- 1. leader has two requirements, validator has one -------------------
 
 
@@ -423,6 +429,216 @@ def test_source_update_invalidates_active_requirement_set_until_replaced():
     assert wo3["requirement_version"] == 2
     fresh_rs = c.get_requirement_set("WO-1", 0)
     assert fresh_rs["source_version"] == wo3["source_version"] == 2
+
+
+# ---- 11. over-limit requirement count: leader ok, validator over cap -----
+
+
+def test_validator_over_limit_requirement_count_rejects_no_commit():
+    """Leader returns exactly the max (30); validator returns the same 30
+    plus a 31st. This must be REJECTED outright (extraction fails), never
+    silently truncated to 30 — silent truncation would let the extra
+    hallucinated requirement disappear and falsely compare equal."""
+    c = _new_contract()
+    _register_work_order(c)
+    base = [_req_dict("OTHER", f"target-{i}") for i in range(30)]
+    leader = json.dumps({"requirements": base})
+    validator = json.dumps({"requirements": base + [_req_dict("OTHER", "target-30")]})
+    with pytest.raises(Exception, match="MALFORMED_OUTPUT"):
+        _extract_two_call(c, "WO-1", leader, validator)
+    _assert_no_commit(c, "WO-1")
+
+
+def test_leader_over_limit_requirement_count_rejects_no_commit():
+    """The reverse: leader returns 31 requirements (over the cap), validator
+    returns a valid 30. The 31-requirement side must be rejected, never
+    silently truncated to 30 before comparison."""
+    c = _new_contract()
+    _register_work_order(c)
+    base = [_req_dict("OTHER", f"target-{i}") for i in range(30)]
+    leader = json.dumps({"requirements": base + [_req_dict("OTHER", "target-30")]})
+    validator = json.dumps({"requirements": base})
+    with pytest.raises(Exception, match="MALFORMED_OUTPUT"):
+        _extract_two_call(c, "WO-1", leader, validator)
+    _assert_no_commit(c, "WO-1")
+
+
+# ---- 12. invalid type is rejected, never silently coerced to OTHER -------
+
+
+def test_invalid_type_rejected_never_coerced_to_other_no_commit():
+    """Leader returns a `type` outside REQUIREMENT_TYPES; validator
+    explicitly returns "OTHER". These must never be able to compare equal —
+    the invalid leader output must be rejected outright, not silently
+    coerced to "OTHER" (which would let it falsely converge with a
+    validator that legitimately returned "OTHER")."""
+    c = _new_contract()
+    _register_work_order(c)
+    leader = _reqs_json(_req("NOT_A_REAL_TYPE", "C-10"))
+    validator = _reqs_json(_req("OTHER", "C-10"))
+    with pytest.raises(Exception, match="MALFORMED_OUTPUT"):
+        _extract_two_call(c, "WO-1", leader, validator)
+    _assert_no_commit(c, "WO-1")
+
+
+# ---- 13. `mandatory` must be a real JSON boolean, not coerced ------------
+
+
+def test_mandatory_missing_rejected_no_commit():
+    c = _new_contract()
+    _register_work_order(c)
+    leader = _reqs_json({"type": "LICENCE_CLASS", "target_value": "C-10"})
+    validator = _reqs_json(_req("LICENCE_CLASS", "C-10", mandatory=True))
+    with pytest.raises(Exception, match="MALFORMED_OUTPUT"):
+        _extract_two_call(c, "WO-1", leader, validator)
+    _assert_no_commit(c, "WO-1")
+
+
+def test_mandatory_string_false_rejected_no_commit():
+    """`"mandatory": "false"` is a non-empty string, and `bool("false")` is
+    True in Python — the exact footgun this validation must reject rather
+    than silently coerce."""
+    c = _new_contract()
+    _register_work_order(c)
+    leader = _reqs_json(
+        {"type": "LICENCE_CLASS", "mandatory": "false", "target_value": "C-10"}
+    )
+    validator = _reqs_json(_req("LICENCE_CLASS", "C-10", mandatory=True))
+    with pytest.raises(Exception, match="MALFORMED_OUTPUT"):
+        _extract_two_call(c, "WO-1", leader, validator)
+    _assert_no_commit(c, "WO-1")
+
+
+def test_mandatory_integer_zero_rejected_no_commit():
+    """`"mandatory": 0` must be rejected, not treated as falsy-equivalent to
+    `False` — only a real JSON boolean is accepted."""
+    c = _new_contract()
+    _register_work_order(c)
+    leader = _reqs_json(
+        {"type": "LICENCE_CLASS", "mandatory": 0, "target_value": "C-10"}
+    )
+    validator = _reqs_json(_req("LICENCE_CLASS", "C-10", mandatory=False))
+    with pytest.raises(Exception, match="MALFORMED_OUTPUT"):
+        _extract_two_call(c, "WO-1", leader, validator)
+    _assert_no_commit(c, "WO-1")
+
+
+# ---- 14. overlong target_value is rejected, never truncated --------------
+
+
+def test_overlong_target_value_rejected_not_truncated_no_commit():
+    """Leader and validator target values are identical for the first 300
+    characters (the old truncation length) but differ afterward, and the
+    validator's is 301 characters — over the max. This must be rejected
+    outright; silently truncating both to 300 characters would make them
+    compare equal and hide the genuine disagreement in character 301."""
+    c = _new_contract()
+    _register_work_order(c)
+    leader_target = "A" * 300
+    validator_target = "A" * 300 + "B"  # 301 chars, differs only after char 300
+    leader = _reqs_json(_req("LICENCE_CLASS", leader_target))
+    validator = _reqs_json(_req("LICENCE_CLASS", validator_target))
+    with pytest.raises(Exception, match="MALFORMED_OUTPUT"):
+        _extract_two_call(c, "WO-1", leader, validator)
+    _assert_no_commit(c, "WO-1")
+
+
+# ---- 15. every new failure mode leaves a fully clean, fail-closed state --
+
+
+def test_over_limit_failure_leaves_clean_fail_closed_state():
+    """Confirms the over-limit rejection (test 11 above) leaves the exact
+    same clean, fail-closed state as every other disagreement/malformed
+    case: no history entry, no version bump, no clearance state, gate
+    closed, assess_provider structurally unreachable."""
+    c = _new_contract()
+    _register_work_order(c)
+    _register_provider(c)
+    base = [_req_dict("OTHER", f"target-{i}") for i in range(30)]
+    leader = json.dumps({"requirements": base})
+    validator = json.dumps({"requirements": base + [_req_dict("OTHER", "target-30")]})
+    with pytest.raises(Exception, match="MALFORMED_OUTPUT"):
+        _extract_two_call(c, "WO-1", leader, validator)
+
+    wo = c.get_work_order("WO-1")
+    assert wo["status"] != "REQUIREMENTS_ACTIVE"
+    assert wo["requirement_version"] == 0
+    assert c.get_requirement_history("WO-1") == []
+    assert c.get_clearance_history("WO-1", "PRV-1") == []
+    assert c.get_clearance_state("WO-1", "PRV-1") == "UNASSESSED"
+    assert c.is_provider_cleared("WO-1", "PRV-1", 0, 1) is False
+    with pytest.raises(Exception, match="no active requirement set"):
+        c.assess_provider("WO-1", "PRV-1")
+
+
+def test_invalid_type_failure_leaves_clean_fail_closed_state():
+    """Same clean-state guarantee for the invalid-type rejection (test 12
+    above)."""
+    c = _new_contract()
+    _register_work_order(c)
+    _register_provider(c)
+    leader = _reqs_json(_req("NOT_A_REAL_TYPE", "C-10"))
+    validator = _reqs_json(_req("OTHER", "C-10"))
+    with pytest.raises(Exception, match="MALFORMED_OUTPUT"):
+        _extract_two_call(c, "WO-1", leader, validator)
+
+    wo = c.get_work_order("WO-1")
+    assert wo["status"] != "REQUIREMENTS_ACTIVE"
+    assert wo["requirement_version"] == 0
+    assert c.get_requirement_history("WO-1") == []
+    assert c.get_clearance_history("WO-1", "PRV-1") == []
+    assert c.get_clearance_state("WO-1", "PRV-1") == "UNASSESSED"
+    assert c.is_provider_cleared("WO-1", "PRV-1", 0, 1) is False
+    with pytest.raises(Exception, match="no active requirement set"):
+        c.assess_provider("WO-1", "PRV-1")
+
+
+def test_malformed_mandatory_failure_leaves_clean_fail_closed_state():
+    """Same clean-state guarantee for a malformed `mandatory` rejection
+    (tests 13 above)."""
+    c = _new_contract()
+    _register_work_order(c)
+    _register_provider(c)
+    leader = _reqs_json(
+        {"type": "LICENCE_CLASS", "mandatory": "false", "target_value": "C-10"}
+    )
+    validator = _reqs_json(_req("LICENCE_CLASS", "C-10", mandatory=True))
+    with pytest.raises(Exception, match="MALFORMED_OUTPUT"):
+        _extract_two_call(c, "WO-1", leader, validator)
+
+    wo = c.get_work_order("WO-1")
+    assert wo["status"] != "REQUIREMENTS_ACTIVE"
+    assert wo["requirement_version"] == 0
+    assert c.get_requirement_history("WO-1") == []
+    assert c.get_clearance_history("WO-1", "PRV-1") == []
+    assert c.get_clearance_state("WO-1", "PRV-1") == "UNASSESSED"
+    assert c.is_provider_cleared("WO-1", "PRV-1", 0, 1) is False
+    with pytest.raises(Exception, match="no active requirement set"):
+        c.assess_provider("WO-1", "PRV-1")
+
+
+def test_overlong_target_failure_leaves_clean_fail_closed_state():
+    """Same clean-state guarantee for the overlong-target rejection (test 14
+    above)."""
+    c = _new_contract()
+    _register_work_order(c)
+    _register_provider(c)
+    leader_target = "A" * 300
+    validator_target = "A" * 300 + "B"
+    leader = _reqs_json(_req("LICENCE_CLASS", leader_target))
+    validator = _reqs_json(_req("LICENCE_CLASS", validator_target))
+    with pytest.raises(Exception, match="MALFORMED_OUTPUT"):
+        _extract_two_call(c, "WO-1", leader, validator)
+
+    wo = c.get_work_order("WO-1")
+    assert wo["status"] != "REQUIREMENTS_ACTIVE"
+    assert wo["requirement_version"] == 0
+    assert c.get_requirement_history("WO-1") == []
+    assert c.get_clearance_history("WO-1", "PRV-1") == []
+    assert c.get_clearance_state("WO-1", "PRV-1") == "UNASSESSED"
+    assert c.is_provider_cleared("WO-1", "PRV-1", 0, 1) is False
+    with pytest.raises(Exception, match="no active requirement set"):
+        c.assess_provider("WO-1", "PRV-1")
 
 
 # ---- normalization unit tests (deterministic, pure Python) ---------------
