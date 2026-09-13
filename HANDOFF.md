@@ -1362,3 +1362,64 @@ verify with `genlayer schema <address>` and a live read, update `NEXT_PUBLIC_CON
 the `permitgrid` Vercel project's production environment, run `vercel deploy --prod --force --yes`
 from `frontend/`, verify `/about` shows the new address, then update `EVIDENCE_REPORT.md` with the
 successful deployment record so there is exactly one unambiguous final deployment chain.
+
+## 2026-09-14 (fifth review round, current): strict rejection of malformed extraction output
+
+**Supersedes the 2026-09-13 entry above and everything before it as the current status. See
+`EVIDENCE_REPORT.md` section 1 for the always-current canonical record.**
+
+The `strict_eq` architecture from the previous round was correct and unchanged. The gap this
+round closed: code running *before* `strict_eq`'s equality check could still silently repair
+malformed/hostile LLM output, which could make two genuinely different validator outputs
+collapse into the same compared value and hide a real disagreement. Specifically fixed in
+`extract_requirements`:
+- `reqs[:MAX_REQUIREMENTS_PER_SET]` (silent truncation) → now rejects the whole extraction if
+  count is outside `1..MAX_REQUIREMENTS_PER_SET`.
+- out-of-enum `type` silently coerced to `"OTHER"` → now rejected; `"OTHER"` only valid when
+  explicitly returned.
+- `bool(r.get("mandatory", True))` (coerces strings/ints/missing to an indistinguishable
+  boolean) → now requires a real JSON boolean, rejects otherwise.
+- `str(...)` + `[:300]` truncation on `target_value` → now requires a non-empty string of at
+  most 300 characters, rejects otherwise (never truncates).
+
+**Final reviewed commit: `2fd3bc982a42d635d1321424407f1494207796dd`.**
+`contracts/permitgrid.py` SHA-256: `9efabd9a147b30af0d71dc52c9d73a64c4732117f8aaeb174c3a744ad25eae77`.
+
+**Tests:** 10 new regression tests in `test/test_extraction_exact_consensus.py` covering every
+new rejection path plus 4 dedicated clean-fail-closed-state checks — file total 26/26 passed.
+Two `test_prompt_injection_resistance.py` tests updated from asserting the old silent-repair
+behavior to asserting rejection. Full non-Docker suite:
+`.venv/bin/python -m pytest test/ --deselect test/test_consensus_localnet.py` →
+**74 passed, 0 failed**.
+
+**GenVM lint, run again:** `GENVM_VERSION=v0.3.0-rc7 .venv/bin/genvm-lint check
+contracts/permitgrid.py` → `genvm-linter` 0.11.0, `ok: true`, 0 errors (39 informational
+warnings), validation passed (21 methods).
+
+**Frontend, same commit, unchanged from before (no frontend code touched this round):**
+`npx vitest run` → 77/77 passed. `npx tsc --noEmit` → clean. `npm run lint` → clean.
+`npm run build` → succeeded (8 routes).
+
+**Deployment — attempted honestly, still blocked, same outage as every prior round:**
+`genlayer deploy --contract contracts/permitgrid.py` run from `2fd3bc9` on 2026-09-14, finalized
+`Undetermined`/`NO_MAJORITY` with zero votes (tx
+`0xc1240408b937fff67c92186f4a974f5befbd66c2ee7fff99a651bbd86e0d65a2`). Re-confirmed via the same
+isolation method as every prior round: an unmodified stock `football_bets.py` sample failed
+identically on the same account/network (tx
+`0xb4f06474b41463ab4eb512d262eb53454e5f4248c916747f63e5b409dc3fce25`) — still a platform-wide
+GenVM validator-layer issue, not this contract's code. Base RPC confirmed healthy at the same
+time. Contract code was not altered to work around the outage.
+
+**Honest net result:** code/tests/lint/frontend are complete and verified at `2fd3bc9`.
+**Deployment/source parity is not yet true** — the live contract
+(`0x06B530fBbDE258F8F8632ca8b2376531B4804a7F`) and the production frontend both predate this
+round's fixes. This remains the one open steward requirement. See `EVIDENCE_REPORT.md` sections
+1, 10, and 11 for the full current record.
+
+**To complete once Studionet recovers:** retry `genlayer deploy --contract
+contracts/permitgrid.py` from `2fd3bc9` (no code changes needed), verify the receipt shows
+genuine successful leader execution (not just `ACCEPTED`), verify the address is callable via
+`genlayer schema`, update `NEXT_PUBLIC_CONTRACT_ADDRESS` in the `permitgrid` Vercel project's
+production environment, redeploy the frontend (`vercel deploy --prod --force --yes` from
+`frontend/`), verify `/about` shows the new address, run a production smoke test, then update
+`EVIDENCE_REPORT.md` section 1 with the successful deployment record.

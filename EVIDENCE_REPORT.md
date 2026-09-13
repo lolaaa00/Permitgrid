@@ -6,33 +6,43 @@ a git commit, a live transaction hash on GenLayer Studionet, or a deployed URL. 
 is simulated or fabricated — where something could not be genuinely verified, that limit is
 stated plainly rather than glossed over.
 
-## 1. Canonical deployment record
+## 1. Canonical current record (read this first — supersedes every other section)
+
+**This is the single current source of truth.** Sections 2 onward are historical background
+and superseded intermediate rounds, kept for audit trail — none of them should be quoted as
+the current commit, contract, or deployment state. Where an older section's own text says
+something is "current" or "the source of truth," that claim is stale; this section wins.
 
 | Field | Value |
 |---|---|
 | Repository | https://github.com/lolaaa00/Permitgrid |
 | Branch | `main` |
-| **Full commit SHA (source of truth for this record)** | `0d8125bc5c37e482d57f18f2d9c02043a6ceb7ee` |
-| Commit pushed at | 2026-09-12T02:13Z (WAT, UTC+1) |
-| `contracts/permitgrid.py` SHA-256 **at this commit** | `ada0c78fb8bef8e583c0ec6535b7f0869b952f1919b4172017d2f1b2d78ce81a` |
-| Production frontend | https://permitgrid-one.vercel.app |
+| Repository HEAD (as of this record) | `2fd3bc982a42d635d1321424407f1494207796dd` |
+| **Final reviewed contract commit** | `2fd3bc982a42d635d1321424407f1494207796dd` |
+| `contracts/permitgrid.py` SHA-256 **at the final reviewed commit** | `9efabd9a147b30af0d71dc52c9d73a64c4732117f8aaeb174c3a744ad25eae77` |
 | Network | GenLayer Studionet |
 | RPC | `https://studio.genlayer.com/api` |
 | Chain ID | `61999` (`0xf22f`) |
 | Explorer | https://explorer-studio.genlayer.com |
+| Currently deployed contract address (on-chain, live, callable) | `0x06B530fBbDE258F8F8632ca8b2376531B4804a7F` |
+| Commit/source corresponding to that deployed address | An earlier, pre-review commit — **not** `2fd3bc9`. It predates both the `strict_eq` deterministic-consensus fix and the strict-validation fix described in sections 10–11 below. |
+| Production frontend | https://permitgrid-one.vercel.app |
+| Production frontend contract address | `0x06B530fBbDE258F8F8632ca8b2376531B4804a7F` (same as "currently deployed" above — unchanged, since no new deploy has succeeded) |
+| **Source/deployment parity** | **NO.** The final reviewed source (`2fd3bc9`) is not yet the contract live on-chain. Deployment was genuinely attempted (see section 12) and blocked by a platform-wide Studionet GenVM validator-layer outage, not a defect in this code. This is an open item, not resolved. |
 
-**Deployed contract address currently live: `0x06B530fBbDE258F8F8632ca8b2376531B4804a7F`,
-deployed from an EARLIER commit — see section 8 for the exact, currently-open gap between
-this address's on-chain source and the code at `0d8125b`.** Redeploying from `0d8125b` was
-genuinely attempted multiple times and did not succeed — documented honestly below rather
-than claimed.
+**What this means concretely:** the code, tests, GenVM lint, and frontend build are all
+genuinely complete and verified at `2fd3bc9` (see section 11). The one remaining steward
+requirement — deploying that exact source and pointing production at it — cannot be marked
+complete because the deploy transaction itself has not yet succeeded on Studionet. Do not
+read any commit hash, contract address, or "currently live"/"source of truth" phrasing in
+sections 2–9 below as describing the present state; those sections predate this fix and are
+retained only as historical record of the earlier rounds that led here.
 
-Four still-earlier contract addresses (`0x81780f7E10baa6450dc1D0d37B829B35a5850e34`,
-`0x28dcECD4011D9eb9C4Ab7234B38be364269fAac6`,
-`0x31015D7542e3d017B2Fb20080b8A18De635223C3`,
-`0xD6cF90D8A4F7323B12EA4398A6AbDF415A4E9500`) exist on Studionet from earlier deploy
-iterations and remain live (Studionet contracts cannot be deleted) but are
-**abandoned/superseded**.
+Older, abandoned contract addresses that still exist on Studionet (addresses cannot be
+deleted there) from earlier deploy iterations: `0x81780f7E10baa6450dc1D0d37B829B35a5850e34`,
+`0x28dcECD4011D9eb9C4Ab7234B38be364269fAac6`, `0x31015D7542e3d017B2Fb20080b8A18De635223C3`,
+`0xD6cF90D8A4F7323B12EA4398A6AbDF415A4E9500`. All are superseded/abandoned; none is used by
+the production frontend.
 
 ## 2. What PermitGrid actually does
 
@@ -231,7 +241,11 @@ as of commit `0d8125bc5c37e482d57f18f2d9c02043a6ceb7ee`.
   product's own stated limitations — this was observed directly during this project's own
   testing when an earlier source URL went stale mid-session.
 
-## 7. Second team review round — contract fixes complete and pushed; live redeployment currently blocked by a genuine Studionet GenVM-layer outage
+## 7. [HISTORICAL — superseded by section 10] Second team review round — contract fixes complete and pushed; live redeployment currently blocked by a genuine Studionet GenVM-layer outage
+
+**Superseded.** This section's commit `0d8125b` and its `prompt_comparative`-based equivalence
+principle no longer describe the current contract — see section 9 (deterministic `strict_eq`)
+and section 10 (strict rejection of malformed output, current). Kept verbatim as audit trail.
 
 A second review round (addressed at commit `0d8125bc5c37e482d57f18f2d9c02043a6ceb7ee`) required:
 removing the "at most one requirement added or omitted" tolerance from the extraction
@@ -332,11 +346,11 @@ redeployed contract (deploy tx `0xd4d4dfe87fa2f0f7c334b00d30ff8940c421b447e2e230
    UI can no longer open the gate from clearance alone). Full suite after these changes: 48
    Python + 57 frontend tests, all passing.
 
-## 10. Fourth review round — deterministic extraction consensus, GenVM lint, deployment still blocked
+## 9. [HISTORICAL — superseded by section 10] Fourth review round — deterministic extraction consensus, GenVM lint, deployment still blocked
 
-**This is now the authoritative, most current record. Section 7's commit (`0d8125b`) and
-its still-open deployment gap are superseded by everything below; do not quote section 7's
-commit SHA or deploy status as current.**
+**Superseded.** This section's commit `00e85c2` and its deploy status are no longer current —
+see section 10 for the fifth (and current) review round, and section 1 for the present canonical
+record. Kept verbatim as audit trail.
 
 A fourth review flagged the single most important remaining correctness gap: `extract_requirements`
 still delegated the final extraction-consensus equality decision to an LLM via
@@ -424,17 +438,128 @@ remains an incomplete steward requirement until a deploy actually succeeds from 
 later commit containing the same fix), at which point `NEXT_PUBLIC_CONTRACT_ADDRESS` must be
 updated, the frontend redeployed, and this section replaced with the successful deployment record.
 
+## 10. Fifth review round (current) — strict rejection of malformed extraction output, GenVM lint, deployment still blocked
+
+**This is the current review round. It supersedes section 9 (commit `00e85c2`) and everything
+before it. See section 1 for the always-current canonical summary.**
+
+Section 9's `strict_eq` architecture was correct and unchanged. The gap this round closed: the
+code that ran *before* `strict_eq`'s equality check could still silently repair or mask malformed
+or hostile LLM output — `reqs[:MAX_REQUIREMENTS_PER_SET]` silently dropped any requirements past
+the cap, an out-of-enum `type` silently became `"OTHER"`, `bool(r.get("mandatory", True))` coerced
+strings/ints/missing values into an indistinguishable boolean, and `target_value` was silently
+`str()`'d and `[:300]`-truncated. Each of these was a lossy transform capable of making two
+genuinely different validator outputs collapse into the same compared value — hiding a real
+disagreement from `strict_eq` rather than surfacing it.
+
+**Fix, at commit `2fd3bc982a42d635d1321424407f1494207796dd`:**
+
+`extract_requirements` now validates every field strictly and **rejects** (raises, aborting the
+transaction with no state written) instead of repairing:
+- Count must be `1..MAX_REQUIREMENTS_PER_SET`; a count over the cap rejects the whole extraction
+  — never sliced/truncated to the cap.
+- Every requirement must be a JSON object.
+- `type` must be a string present in `REQUIREMENT_TYPES`; an invalid type is rejected outright —
+  `"OTHER"` is only ever valid when a validator explicitly returns it, never a coercion target.
+- `mandatory` must be a real JSON boolean; a string, integer, or missing value is rejected — no
+  `bool(...)` coercion that could turn `"false"` into `True` or a missing key into a silent default.
+- `target_value` must be a non-empty string of at most 300 characters; an overlong value is
+  rejected — never silently truncated, which could make two values differing only past
+  character 300 compare equal.
+- The only transformations that remain between the LLM's raw output and the `strict_eq`-compared
+  value are the pre-existing, deliberately deterministic normalization functions
+  (`_normalize_type`, `_normalize_target`: NFKC, casefold, whitespace strip/collapse) — no fuzzy
+  matching, synonym handling, abbreviation expansion, or other tolerance was added.
+- `contracts/permitgrid.py` SHA-256 **at commit `2fd3bc9`**:
+  `9efabd9a147b30af0d71dc52c9d73a64c4732117f8aaeb174c3a744ad25eae77`
+
+**Test evidence, production comparison path:** `test/test_extraction_exact_consensus.py` gained
+10 new tests covering every new rejection path — over-limit count both directions (leader=30/
+validator=31, and the reverse), invalid type vs. an explicitly-returned `"OTHER"`, missing/
+string/`0`-valued `mandatory`, and an overlong `target_value` that differs from its counterpart
+only past the old truncation boundary — plus 4 dedicated clean-fail-closed-state tests confirming
+each new rejection leaves no history entry, no version bump, no clearance state, gate closed, and
+`assess_provider` structurally unreachable, exactly like every pre-existing disagreement case.
+File total: **26/26 passed**
+(`.venv/bin/python -m pytest test/test_extraction_exact_consensus.py -v`). Two
+`test_prompt_injection_resistance.py` tests that previously asserted the old lossy-repair behavior
+(silent coercion to `OTHER`, silent truncation to the cap) were rewritten to assert rejection
+instead. Full non-Docker suite:
+`.venv/bin/python -m pytest test/ --deselect test/test_consensus_localnet.py` →
+**74 passed, 0 failed, 5 deselected** (Docker-only localnet tests).
+
+**GenVM linter, run again against the final commit:**
+```
+GENVM_VERSION=v0.3.0-rc7 .venv/bin/genvm-lint check contracts/permitgrid.py
+```
+`genvm-linter` version `0.11.0`. Result: `"ok": true` — lint passed (2 checks, 39 informational
+`W004` warnings recommending `gl.vm.UserError` over bare `Exception`/`ValueError`, **0 errors**);
+validate passed (`Contract: PermitGrid`, `Methods: 21 (12 view, 9 write)`, one informational
+`I200` note that a newer runner exists). No unresolved lint errors.
+(`GENVM_VERSION=v0.3.0-rc7` selects the cached manager version that actually contains the
+extracted runner matching the contract's pinned `Depends` hash
+`1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6` — the linter's default cached version
+resolves that hash to the wrong internal path, an environment/linter detail, not a contract
+defect.)
+
+**Frontend, same commit:** `npx vitest run` → **77/77 passed**. `npx tsc --noEmit` → clean, no
+errors. `npm run lint` (`eslint`) → clean, no errors/warnings. `npm run build` (`next build`) →
+succeeded, all 8 routes compiled (`/`, `/about`, `/clearance/new`, `/provider/[id]/work/[workId]`,
+`/providers/new`, `/work-order/[id]`, `/work-orders/new`, `/_not-found`). No frontend code was
+changed this round — the existing requirement-set fail-closed gating (`requirementSetValidity.ts`
+and both detail-page views) remains exactly as before and continues to pass unmodified.
+
+**Deployment — attempted honestly, still blocked, same platform-wide outage as every prior
+round, now confirmed across a sixth calendar day of retries:**
+
+`genlayer deploy --contract contracts/permitgrid.py` was run from commit `2fd3bc9` on 2026-09-14.
+It finalized `Undetermined` (`result_name: 'NO_MAJORITY'`, `votes_committed: '0'`,
+`votes_revealed: '0'`, `activator: ''`, `last_leader: ''`, `status_name: 'FINALIZED'`) — no
+validator picked up the transaction. Tx hash:
+`0xc1240408b937fff67c92186f4a974f5befbd66c2ee7fff99a651bbd86e0d65a2`
+(inspectable at `https://explorer-studio.genlayer.com/tx/<hash>`). Re-ran the same isolation test
+used in every prior round: an unmodified stock `football_bets.py` sample contract deployed to the
+same network with the same account failed identically (tx
+`0xb4f06474b41463ab4eb512d262eb53454e5f4248c916747f63e5b409dc3fce25`, same `NO_MAJORITY`/
+zero-votes pattern) — conclusive, again, that this is a platform-wide GenVM validator-layer
+issue and not a defect in this contract's code. Base JSON-RPC confirmed healthy at the same time
+(`eth_chainId` → `0xf22f`).
+
+Per explicit instruction, contract code was **not** altered to try to work around this outage —
+it is not fixable from the client side, and doing so would not address the actual cause.
+
+**Honest current state:** code, tests, GenVM lint, and frontend verification are all genuinely
+complete and verifiable at `2fd3bc9`. **Source/deployment parity is not yet true.** The contract
+live on-chain at `0x06B530fBbDE258F8F8632ca8b2376531B4804a7F`, and the production frontend which
+still points at it, both predate this round's fixes. This remains an open steward requirement
+until a deploy from `2fd3bc9` (or a later commit containing the same fixes) actually succeeds —
+see section 1 for the current canonical status.
+
+**To complete once Studionet's GenVM layer recovers:** retry
+`genlayer deploy --contract contracts/permitgrid.py` from `2fd3bc9` (no code changes needed),
+verify with `genlayer receipt <tx>` that leader execution genuinely succeeded (not just
+`ACCEPTED`/`MAJORITY_AGREE`), verify the deployed contract is callable via `genlayer schema
+<address>` or a safe read call, update `NEXT_PUBLIC_CONTRACT_ADDRESS` in the `permitgrid` Vercel
+project's production environment (never the separate "frontend"/Vertex project), run
+`vercel deploy --prod --force --yes` from `frontend/`, verify `/about` shows the new address and
+run a production smoke test, then update section 1 of this report with the successful deployment
+record so there is exactly one unambiguous current deployment chain.
+
 ## 11. Reviewer-ready evidence index (current)
 
-- Repository: https://github.com/lolaaa00/Permitgrid — **final reviewed commit for this round:
-  `00e85c248acccdee6cb2025a7628fceb77b25c0f`** (supersedes `0d8125b` referenced in section 7)
+- Repository: https://github.com/lolaaa00/Permitgrid — **final reviewed commit:
+  `2fd3bc982a42d635d1321424407f1494207796dd`** (supersedes `00e85c2` in section 9 and `0d8125b`
+  in section 7)
+- `contracts/permitgrid.py` SHA-256 at that commit:
+  `9efabd9a147b30af0d71dc52c9d73a64c4732117f8aaeb174c3a744ad25eae77`
 - Live app: https://permitgrid-one.vercel.app
 - Diagnostics (resolved contract address/RPC/chain, inspectable by anyone): https://permitgrid-one.vercel.app/about
 - **Contract currently live and pointed at by the frontend**: `0x06B530fBbDE258F8F8632ca8b2376531B4804a7F`
-  on GenLayer Studionet — this predates commit `00e85c2` and does **not** contain this round's
-  deterministic `strict_eq` extraction-consensus fix. Deployment of `00e85c2` was genuinely
-  attempted (see section 10) and blocked by a platform-wide Studionet GenVM outage, confirmed via
-  an isolation test against an unmodified stock contract. This gap is open, not resolved.
+  on GenLayer Studionet — this predates commit `2fd3bc9` and does **not** contain this round's
+  strict-validation or the prior round's `strict_eq` extraction-consensus fixes. Deployment of
+  `2fd3bc9` was genuinely attempted (see section 10) and blocked by a platform-wide Studionet
+  GenVM outage, re-confirmed via an isolation test against an unmodified stock contract. This gap
+  is open, not resolved — see section 1 for the current canonical summary.
   Inspect any transaction hash above at https://explorer-studio.genlayer.com/tx/`<hash>`
 - Full session-by-session build history with additional evidence: `HANDOFF.md` in the
   repository root.
