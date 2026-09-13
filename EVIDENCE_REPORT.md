@@ -332,15 +332,109 @@ redeployed contract (deploy tx `0xd4d4dfe87fa2f0f7c334b00d30ff8940c421b447e2e230
    UI can no longer open the gate from clearance alone). Full suite after these changes: 48
    Python + 57 frontend tests, all passing.
 
-## 9. Reviewer-ready evidence index
+## 10. Fourth review round — deterministic extraction consensus, GenVM lint, deployment still blocked
 
-- Repository: https://github.com/lolaaa00/Permitgrid (commit `0d8125bc5c37e482d57f18f2d9c02043a6ceb7ee`)
+**This is now the authoritative, most current record. Section 7's commit (`0d8125b`) and
+its still-open deployment gap are superseded by everything below; do not quote section 7's
+commit SHA or deploy status as current.**
+
+A fourth review flagged the single most important remaining correctness gap: `extract_requirements`
+still delegated the final extraction-consensus equality decision to an LLM via
+`gl.eq_principle.prompt_comparative`, even though the compared value (`consensus_key`) was already
+fully deterministic. An LLM comparator, however strictly worded, is not a proof of exact equality.
+
+**Fix, at commit `00e85c248acccdee6cb2025a7628fceb77b25c0f`:**
+
+- `extract_requirements` now calls `gl.eq_principle.strict_eq(extract)` — the real GenVM primitive
+  that runs `extract()` once for the leader and once more via an independently-sandboxed validator
+  re-execution (`vm.spawn_sandbox`), then does plain Python `==` on the two returned strings. There
+  is no `principle` argument, no natural-language instruction, and no LLM anywhere in this decision.
+- `extract()`'s return value was narrowed to contain **only** the deterministic canonical
+  `(type, mandatory, normalized_target, count)` multiset (`_canonical_requirement_multiset`) — free
+  text an LLM could phrase differently across independent runs (`requirement_id`, `scope_summary`,
+  `verification_target`, original-cased `target_value`) is excluded from the compared value
+  entirely, not merely instructed to be ignored.
+- Stored `Requirement` entries are now deterministically reconstructed from the agreed canonical
+  multiset after consensus succeeds (synthetic `requirement_id`, template-derived
+  `scope_summary`/`verification_target`, `target_value` set to the already-agreed
+  `normalized_target`) — never trusted from a second, separately-unverified pass of LLM free text.
+- `contracts/permitgrid.py` SHA-256 **at commit `00e85c2`**:
+  `ac0271014a9dd454af5354fb60b401e287204fbc432ce019e85dd589389f8eee`
+
+**Test evidence — production comparison path, not a stricter test-only fake:**
+
+`test/test_extraction_exact_consensus.py`'s fake `gl.eq_principle.strict_eq` was rewritten to
+mirror the real primitive's signature exactly (single `fn` argument, no `principle` text) and
+genuinely calls the contract's real `extract()` closure twice, comparing the real returned strings
+— the same mechanism the production contract uses, not a separate hand-rolled equality check. 15/15
+tests pass (`.venv/bin/python -m pytest test/test_extraction_exact_consensus.py -v`), covering:
+leader=2/validator=1 disagreement, leader=1/validator=2 disagreement, same-type-different-target
+disagreement, same-type-target-different-mandatory disagreement, duplicate-count-2-vs-1
+disagreement, reordered-identical-converges, normalization-equivalent-targets-converge,
+disagreement-leaves-clean-fail-closed-state (no history entry, no version bump, status unchanged,
+no clearance, gate closed, `assess_provider` unreachable), no-partial-write-before-consensus, and
+source-update invalidation/recovery. `test/test_prompt_injection_resistance.py`'s fake
+`eq_principle` and its two extraction-shape-dependent assertions were updated to match; 14/14 pass.
+Full non-Docker suite: `.venv/bin/python -m pytest test/ --deselect test/test_consensus_localnet.py`
+→ **63 passed**.
+
+**GenVM linter (not black/flake8) — actually run:**
+
+`genvm-linter` 0.11.0 installed into `.venv` (recorded in `requirements-dev.txt`), run against the
+exact runtime pinned by the contract's `Depends` header:
+
+```
+GENVM_VERSION=v0.3.0-rc7 .venv/bin/genvm-lint check contracts/permitgrid.py
+```
+
+Result: `"ok": true` — lint passed (2 checks; 28 `W004` informational warnings recommending
+`gl.vm.UserError` over bare `Exception`/`ValueError`, no errors) and validate passed (`Contract:
+PermitGrid`, `Methods: 21 (12 view, 9 write)`, one `I200` informational note that a newer runner
+exists). No unresolved lint errors. (The default cached manager version resolves the pinned
+runner hash to the wrong path; `GENVM_VERSION=v0.3.0-rc7` — the cached version that actually
+contains the pinned `py-lib-genlayer-std` hash `1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6`
+extracted — is required. This is an environment-resolution detail of the linter, not a defect in
+the contract.)
+
+**Frontend verification, same commit:** `npx vitest run` → 77/77 passed. `npx tsc --noEmit` → clean.
+`npm run lint` (`eslint`) → clean. `npm run build` (`next build`) → succeeded, all 8 routes compiled.
+
+**Deployment — attempted honestly, still blocked, same outage as section 7, now confirmed to
+persist across a fifth calendar day of retries:**
+
+`genlayer deploy --contract contracts/permitgrid.py` was run twice from commit `00e85c2` on
+2026-09-13. Both finalized `Undetermined` (`result_name: 'NO_MAJORITY'`, `votes_committed: '0'`,
+`votes_revealed: '0'`, `activator: ''`, `last_leader: ''`) — no validator ever picked up either
+transaction. Hashes: `0x6ce80d08c54af0e27c11e8dc0994181a64ccf75cf4740ef9bc096c8d6b23b499`,
+`0x45e451865e5f30a0cd4cb6ce98820f274f8c89ca22b495ff2fc823c1698eed90`
+(inspectable at `https://explorer-studio.genlayer.com/tx/<hash>`). Re-ran the same isolation test
+as section 7: an unmodified stock `football_bets.py` sample contract deployed to the same network
+with the same account failed identically (tx
+`0x24dc1dcd1db4cd9355d6c19c707549158729f75b0d89418eada78f35fb4ec1d8`, same
+`NO_MAJORITY`/zero-votes pattern) — conclusive that the failure is a platform-wide GenVM
+validator-layer issue, not a defect in this contract's code, and not something a code change on
+this side can fix. Base JSON-RPC (`eth_chainId` → `0xf22f`, `eth_blockNumber` → an advancing real
+block) was confirmed healthy at the same time.
+
+**Honest current state:** the code, tests, and lint requirements for this review round are all
+genuinely complete and verifiable at commit `00e85c2`. **Source/deployment parity is NOT yet true**
+— the contract live on-chain at `0x06B530fBbDE258F8F8632ca8b2376531B4804a7F` still predates this
+round's deterministic-consensus fix, and the frontend still points at that older address. This
+remains an incomplete steward requirement until a deploy actually succeeds from `00e85c2` (or a
+later commit containing the same fix), at which point `NEXT_PUBLIC_CONTRACT_ADDRESS` must be
+updated, the frontend redeployed, and this section replaced with the successful deployment record.
+
+## 11. Reviewer-ready evidence index (current)
+
+- Repository: https://github.com/lolaaa00/Permitgrid — **final reviewed commit for this round:
+  `00e85c248acccdee6cb2025a7628fceb77b25c0f`** (supersedes `0d8125b` referenced in section 7)
 - Live app: https://permitgrid-one.vercel.app
 - Diagnostics (resolved contract address/RPC/chain, inspectable by anyone): https://permitgrid-one.vercel.app/about
 - **Contract currently live and pointed at by the frontend**: `0x06B530fBbDE258F8F8632ca8b2376531B4804a7F`
-  on GenLayer Studionet — this is from the prior session and does not yet contain the
-  exact-multiset consensus / requirement-set-validity fixes described in section 7, which are
-  committed and pushed but not yet deployed (see section 7 for exactly why, with evidence).
+  on GenLayer Studionet — this predates commit `00e85c2` and does **not** contain this round's
+  deterministic `strict_eq` extraction-consensus fix. Deployment of `00e85c2` was genuinely
+  attempted (see section 10) and blocked by a platform-wide Studionet GenVM outage, confirmed via
+  an isolation test against an unmodified stock contract. This gap is open, not resolved.
   Inspect any transaction hash above at https://explorer-studio.genlayer.com/tx/`<hash>`
 - Full session-by-session build history with additional evidence: `HANDOFF.md` in the
   repository root.

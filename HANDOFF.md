@@ -1291,3 +1291,74 @@ nonexistent contract.
 update `NEXT_PUBLIC_CONTRACT_ADDRESS` in the `permitgrid` Vercel project's production
 environment, run `vercel deploy --prod --force --yes` from `frontend/`, verify `/about` shows
 the new address, then run a live browser-wallet test against it.
+
+## 2026-09-13 (fourth review round): deterministic extraction consensus, GenVM lint run, deployment still blocked
+
+**This section supersedes everything above about the currently-committed contract source and
+deployment status; the commit references above (`0d8125b`) are stale as of this entry.**
+
+**What changed, and why:** `extract_requirements` previously decided extraction consensus via
+`gl.eq_principle.prompt_comparative` — an LLM natural-language comparator, even though the value
+being compared (`consensus_key`) was already fully deterministic. However strict the wording, an
+LLM comparator is not a guarantee of exact equality, and disagreement should never be an LLM's
+call. Replaced it with `gl.eq_principle.strict_eq(extract)` — the real GenVM primitive that runs
+`extract()` once for the leader and once more via an independently-sandboxed validator
+re-execution, then does plain Python `==` on the two returned strings. No `principle` text, no LLM,
+anywhere in the final equality decision. `extract()` now returns *only* the deterministic canonical
+`(type, mandatory, normalized_target, count)` multiset — free-text fields an LLM could phrase
+differently across independent runs are excluded from the compared value entirely, not merely
+instructed to be ignored. Stored `Requirement` entries are deterministically reconstructed from the
+agreed canonical multiset after consensus succeeds, never trusted from post-hoc LLM free text.
+
+**Final reviewed commit: `00e85c248acccdee6cb2025a7628fceb77b25c0f`.**
+`contracts/permitgrid.py` SHA-256 at this commit:
+`ac0271014a9dd454af5354fb60b401e287204fbc432ce019e85dd589389f8eee`.
+
+**Tests exercise the real production comparison path.** `test/test_extraction_exact_consensus.py`'s
+fake `gl.eq_principle.strict_eq` was rewritten to mirror the real primitive's signature exactly
+(single `fn` argument, no `principle`), genuinely calling the contract's real `extract()` closure
+twice and comparing the real returned strings — not a separate, stricter hand-rolled check. 15/15
+pass, covering every required disagreement/convergence/clean-state/no-partial-write scenario.
+`test/test_prompt_injection_resistance.py` updated to match (14/14 pass). Full non-Docker suite:
+`.venv/bin/python -m pytest test/ --deselect test/test_consensus_localnet.py` → **63 passed**.
+
+**The real GenVM linter was run** (not black/flake8, which were already in use but explicitly do
+not substitute for this): `genvm-linter` 0.11.0 installed (`requirements-dev.txt`), run against the
+exact pinned runtime:
+```
+GENVM_VERSION=v0.3.0-rc7 .venv/bin/genvm-lint check contracts/permitgrid.py
+```
+Result: `ok: true` — 0 lint errors (28 informational `W004` warnings suggesting `gl.vm.UserError`
+over bare exceptions, pre-existing style, not blocking), validation passed (`PermitGrid`, 21
+methods, 12 view / 9 write), one informational `I200` note about a newer runner being available.
+(`GENVM_VERSION=v0.3.0-rc7` is required because the linter's default cached manager version
+resolves the contract's pinned runner hash to the wrong internal path — an environment/linter
+detail, not a contract defect; the hash is present and correct once that version is selected.)
+
+**Frontend, same commit:** `npx vitest run` → 77/77 passed. `npx tsc --noEmit` → clean.
+`npm run lint` → clean. `npm run build` → succeeded (8 routes).
+
+**Deployment attempted honestly, still blocked — same outage as previous rounds, persisting into
+a further day:** `genlayer deploy --contract contracts/permitgrid.py` run twice from `00e85c2` on
+2026-09-13, both finalized `Undetermined`/`NO_MAJORITY` with zero votes
+(`0x6ce80d08c54af0e27c11e8dc0994181a64ccf75cf4740ef9bc096c8d6b23b499`,
+`0x45e451865e5f30a0cd4cb6ce98820f274f8c89ca22b495ff2fc823c1698eed90`). Re-confirmed via the same
+isolation method as before: an unmodified stock `football_bets.py` sample deployed to the same
+network with the same account failed identically
+(`0x24dc1dcd1db4cd9355d6c19c707549158729f75b0d89418eada78f35fb4ec1d8`) — conclusively a
+platform-wide GenVM validator-layer issue, not this contract's code. Base RPC confirmed healthy
+(`eth_chainId` → `0xf22f`, `eth_blockNumber` advancing) at the same time.
+
+**Honest net result:** code, tests, and lint for this review round are genuinely complete and
+verifiable at `00e85c2`. **Deployment/source parity is not yet true** — the contract live on-chain
+at `0x06B530fBbDE258F8F8632ca8b2376531B4804a7F` (and the frontend, which still points at it)
+predate this round's deterministic-consensus fix. This remains an open steward requirement, not
+resolved, until a deploy from `00e85c2` (or a later commit containing the same fix) actually
+succeeds. See `EVIDENCE_REPORT.md` section 10/11 for the full record.
+
+**To complete once Studionet's GenVM layer recovers**: retry
+`genlayer deploy --contract contracts/permitgrid.py` from `00e85c2` (no code changes needed),
+verify with `genlayer schema <address>` and a live read, update `NEXT_PUBLIC_CONTRACT_ADDRESS` in
+the `permitgrid` Vercel project's production environment, run `vercel deploy --prod --force --yes`
+from `frontend/`, verify `/about` shows the new address, then update `EVIDENCE_REPORT.md` with the
+successful deployment record so there is exactly one unambiguous final deployment chain.
