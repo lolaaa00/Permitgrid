@@ -65,7 +65,14 @@ def _load_contract_module():
     class _eq_principle:
         # Matches test_clearance_policy.py's stub: single call, no real
         # multi-validator voting (that only exists in the real GenVM).
+        # `assess_provider` (Stage B) still uses `prompt_comparative`.
         prompt_comparative = staticmethod(lambda fn, principle="": fn())
+        # `extract_requirements` (Stage A) now uses the real deterministic
+        # `gl.eq_principle.strict_eq` — no `principle` argument, single
+        # `fn` call here since this file is testing schema/injection
+        # resistance, not the consensus-disagreement path itself (that is
+        # test/test_extraction_exact_consensus.py's job).
+        strict_eq = staticmethod(lambda fn: fn())
 
     class _FakeGL:
         class message:
@@ -499,21 +506,18 @@ def test_assess_provider_aborts_on_fetch_failure_no_commit():
 
 
 def test_extraction_equivalence_principle_is_strict_no_tolerance():
-    """Structural check: the comparative-equivalence principle text given
-    to consensus validators must require EXACT multiset equality on the
-    deterministically-normalized (type, mandatory, normalized_target, count)
-    `consensus_key` — no 'at most one added/omitted', no abbreviation/
-    semantic-similarity tolerance, and `mandatory` must be part of the
-    compared identity, not an incidental field."""
+    """Structural check: extraction consensus must NOT be an LLM-judged
+    `prompt_comparative` decision at all — no natural-language equivalence
+    principle text exists for it to be lenient or strict about. The
+    equality decision must be `gl.eq_principle.strict_eq`, real
+    deterministic Python `==` on a value containing only fully-normalized
+    (type, mandatory, normalized_target, count) data, with no free-text
+    fields (which an LLM could phrase differently across independent
+    validator runs) included in the compared value at all."""
     src = inspect.getsource(pg.PermitGrid.extract_requirements)
-    principle_text = src.split("principle=(")[1].split("            ),\n        )")[0]
-    assert "at most one" not in principle_text
-    assert "duplicates collapsed" not in principle_text
-    assert "treat as equivalent" not in principle_text.lower()
-    assert "consensus_key" in principle_text
-    assert "NO tolerance" in principle_text
-    assert "mandatory" in principle_text
-    assert "count" in principle_text  # cardinality is explicitly compared
+    assert "gl.eq_principle.strict_eq(extract)" in src
+    assert "gl.eq_principle.prompt_comparative" not in src
+    assert "principle=" not in src
 
 
 def test_extract_requirements_commits_two_distinct_same_type_requirements():
@@ -526,15 +530,15 @@ def test_extract_requirements_commits_two_distinct_same_type_requirements():
     _register_work_order(c)
     two_licence_classes_json = (
         '{"requirements": ['
-        '{"requirement_id": "REQ-01", "type": "LICENCE_CLASS", "mandatory": true, '
-        '"target_value": "C-10 Electrical", "scope_summary": "wiring", "verification_target": "x"},'
-        '{"requirement_id": "REQ-02", "type": "LICENCE_CLASS", "mandatory": true, '
-        '"target_value": "C-20 HVAC", "scope_summary": "hvac", "verification_target": "y"}'
+        '{"type": "LICENCE_CLASS", "mandatory": true, "target_value": "C-10 Electrical"},'
+        '{"type": "LICENCE_CLASS", "mandatory": true, "target_value": "C-20 HVAC"}'
         "]}"
     )
     _extract_with_mock(c, "WO-1", two_licence_classes_json)
     rs = c.get_requirement_set("WO-1", 0)
     types = [r["type"] for r in rs["requirements"]]
     assert types.count("LICENCE_CLASS") == 2
+    # Stored target_value is the deterministic `normalized_target` (from the
+    # agreed canonical multiset), not the LLM's original-cased free text.
     targets = {r["target_value"] for r in rs["requirements"]}
-    assert targets == {"C-10 Electrical", "C-20 HVAC"}
+    assert targets == {"c-10 electrical", "c-20 hvac"}

@@ -140,7 +140,9 @@ def _validate_enum(name: str, value: str, allowed: tuple) -> str:
 # Two independent validators' extractions are judged equivalent only if
 # their normalized (type, mandatory, normalized_target) multisets are an
 # EXACT match — see `_canonical_requirement_multiset` and the
-# `prompt_comparative` principle in `extract_requirements`.
+# `gl.eq_principle.strict_eq` call in `extract_requirements`, which performs
+# real deterministic Python `==` equality between leader and validator, not
+# an LLM-judged comparison.
 
 
 def _normalize_type(type_value: str) -> str:
@@ -736,12 +738,9 @@ Return between 1 and {MAX_REQUIREMENTS_PER_SET} requirements as JSON:
 {{
   "requirements": [
     {{
-      "requirement_id": "REQ-01",
       "type": "LICENCE_CLASS",
       "mandatory": true,
-      "target_value": "short target category/value string",
-      "scope_summary": "one sentence describing why this applies to the work",
-      "verification_target": "what evidence must establish to satisfy this"
+      "target_value": "short target category/value string"
     }}
   ]
 }}
@@ -754,88 +753,84 @@ Respond with ONLY that JSON object, nothing else.
             if not isinstance(reqs, list) or len(reqs) == 0:
                 raise ValueError("MALFORMED_OUTPUT: no requirements returned")
             normalized = []
-            for i, r in enumerate(reqs[:MAX_REQUIREMENTS_PER_SET]):
-                rid = str(r.get("requirement_id") or f"REQ-{i+1:02d}")[:MAX_ID_LEN]
+            for r in reqs[:MAX_REQUIREMENTS_PER_SET]:
                 rtype = str(r.get("type", "OTHER")).upper()
                 if rtype not in REQUIREMENT_TYPES:
                     rtype = "OTHER"
                 normalized.append(
                     {
-                        "requirement_id": rid,
                         "type": rtype,
                         "mandatory": bool(r.get("mandatory", True)),
                         "target_value": str(r.get("target_value", ""))[:300],
-                        "scope_summary": str(r.get("scope_summary", ""))[
-                            :MAX_STRING_LEN
-                        ],
-                        "verification_target": str(r.get("verification_target", ""))[
-                            :MAX_STRING_LEN
-                        ],
                     }
                 )
-            # `consensus_key` is the ONLY field the equivalence principle
-            # below is instructed to compare. It is built by pure
-            # deterministic Python (see `_canonical_requirement_multiset`)
-            # from (type, mandatory, normalized_target) — no LLM judgment,
-            # no semantic/abbreviation matching, exact multiset equality
-            # with cardinality preserved. All other fields (original
-            # target_value, scope_summary, verification_target,
-            # requirement_id) are preserved verbatim for storage/display
-            # and are explicitly OUT of comparison scope.
+            # This is the ENTIRE return value of `extract()`, and therefore
+            # the ENTIRE value `gl.eq_principle.strict_eq` compares between
+            # leader and validator. strict_eq performs a real Python `==`
+            # comparison (see genlayer.eq_principle.strict_eq /
+            # vm.spawn_sandbox) — there is no LLM in this decision at all,
+            # not even to judge "close enough". Only fully deterministic,
+            # order-independent, cardinality-preserving canonical data
+            # (type, mandatory, normalized_target, count — see
+            # _canonical_requirement_multiset/_normalize_target/
+            # _normalize_type) is included. Free-text fields an LLM might
+            # phrase differently between independent validator runs
+            # (a human-readable rationale, a requirement id, the
+            # original un-normalized target casing) are deliberately
+            # EXCLUDED from this return value entirely, not merely
+            # instructed-to-be-ignored by a comparator — they cannot
+            # possibly affect the equality decision because they are not
+            # part of the compared value's structure.
             consensus_key = _canonical_requirement_multiset(normalized)
-            return json.dumps(
-                {"requirements": normalized, "consensus_key": consensus_key},
-                sort_keys=True,
-            )
+            return json.dumps(consensus_key, sort_keys=True)
 
-        raw = gl.eq_principle.prompt_comparative(
-            extract,
-            principle=(
-                "This is a MECHANICAL exact-match check, not a semantic or "
-                "subjective judgment. Compare ONLY the `consensus_key` field "
-                "of each output — ignore `requirements`, `target_value`, "
-                "`scope_summary`, `verification_target`, `requirement_id`, "
-                "and everything else entirely; those are display-only "
-                "fields already excluded from comparison by construction. "
-                "`consensus_key` is a list of objects, each with `type`, "
-                "`mandatory`, `normalized_target`, and `count`, already "
-                "fully normalized by deterministic code (Unicode NFKC, "
-                "casefold, whitespace-collapsed) before you see it — do NOT "
-                "apply any additional normalization, abbreviation "
-                "expansion, or 'same underlying category' reasoning "
-                "yourself. Two outputs are EQUIVALENT if and only if their "
-                "`consensus_key` lists, treated as sets of entries "
-                "(order does not matter — the position of entries in the "
-                "list is irrelevant), are IDENTICAL: same number of "
-                "entries, and every entry in one list has an exactly "
-                "matching entry in the other list with the same `type` "
-                "string, the same `mandatory` boolean, the same "
-                "`normalized_target` string (character-for-character), and "
-                "the same `count` integer. There is NO tolerance for a "
-                "missing entry, an extra entry, a `count` mismatch (a "
-                "duplicate requirement present once on one side and twice "
-                "on the other is a DISAGREEMENT), a `mandatory` mismatch, "
-                "or any difference in `normalized_target` however small — "
-                "vote NOT equivalent for any such difference, with no "
-                "exceptions for 'close enough' or 'materially similar' "
-                "target values."
-            ),
-        )
-        parsed = json.loads(raw)
-        reqs = parsed["requirements"]
+        # Real deterministic Python equality decides consensus here — see
+        # the docstring above `extract()`. `gl.eq_principle.strict_eq` runs
+        # `extract()` independently in a sandboxed validator execution
+        # (genuinely re-fetching sources and re-deriving requirements, not
+        # replaying the leader's output) and requires the two returned
+        # strings to be equal via `==`; any difference — an added,
+        # omitted, duplicated, or altered requirement, or a `mandatory`
+        # mismatch — makes the strings unequal and the validator votes
+        # disagreement, which GenVM resolves as a failed/reverted
+        # transaction: no partial or disputed requirement set is ever
+        # committed.
+        raw = gl.eq_principle.strict_eq(extract)
+        canonical = json.loads(raw)
+        if not isinstance(canonical, list) or len(canonical) == 0:
+            raise ValueError("MALFORMED_OUTPUT: empty canonical requirement set")
 
+        # The stored Requirement entries are a pure, deterministic function
+        # of the AGREED canonical multiset — not a second, separately
+        # untrusted pass of leader-authored free text. `requirement_id`,
+        # `scope_summary`, and `verification_target` are generated
+        # directly from data that was already exactly agreed upon, so they
+        # can never diverge from what consensus actually approved.
         entry_requirements = []
-        for r in reqs:
-            entry_requirements.append(
-                Requirement(
-                    requirement_id=r["requirement_id"],
-                    type=r["type"],
-                    mandatory=r["mandatory"],
-                    target_value=r["target_value"],
-                    scope_summary=r["scope_summary"],
-                    verification_target=r["verification_target"],
+        counter = 0
+        for entry in canonical:
+            count = int(entry["count"])
+            for _ in range(count):
+                counter += 1
+                if counter > MAX_REQUIREMENTS_PER_SET:
+                    raise ValueError(
+                        f"agreed requirement set exceeds max size {MAX_REQUIREMENTS_PER_SET}"
+                    )
+                rtype = str(entry["type"])
+                target = str(entry["normalized_target"])
+                entry_requirements.append(
+                    Requirement(
+                        requirement_id=f"REQ-{counter:02d}",
+                        type=rtype,
+                        mandatory=bool(entry["mandatory"]),
+                        target_value=target,
+                        scope_summary=(
+                            f"{rtype.replace('_', ' ').title()} requirement "
+                            f"for this work order."
+                        ),
+                        verification_target=f"Evidence must establish: {target}",
+                    )
                 )
-            )
 
         history = self.requirement_history[work_order_id]
         new_version = len(history) + 1

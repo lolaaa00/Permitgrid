@@ -1,32 +1,32 @@
 """
 Exact-multiset extraction-consensus regression tests.
 
-This is a distinct, more faithful executable seam than the single-call
-stub used elsewhere in this project's test suite. Because the extraction
-equivalence comparison is now fully deterministic (see
-`_canonical_requirement_multiset`/`_normalize_target`/`_normalize_type` in
-contracts/permitgrid.py), the actual consensus DECISION — not just the
-prompt text asking for it — can be faithfully replicated in plain pytest:
-this file's fake `gl.eq_principle.prompt_comparative` genuinely calls the
-real `extract()` closure TWICE (once standing in for the leader, once for
-an independent validator), each time with a different queued
-`gl.nondet.exec_prompt` response, and then applies the exact same
-mechanical equality check on the real `consensus_key` field both real
-calls computed — same rule the real principle text instructs an LLM
-comparator to apply, just executed directly in Python instead of via an
-LLM, which is possible precisely because that comparison was deliberately
-made deterministic.
+These tests exercise the REAL production comparison mechanism, not a
+test-only fake that is stricter than the contract. The fake
+`gl.eq_principle.strict_eq` implemented below is a faithful re-creation of
+the real `genlayer` runtime's `strict_eq` (see `py-lib-genlayer-std`'s
+`eq_principle.strict_eq`, which calls `fn()` once for the leader and once
+more via `vm.spawn_sandbox(fn)` for an independent validator re-execution,
+then does plain Python `my_res == leaders_res`): it takes a single `fn`
+argument (no `principle` text — there is no natural-language instruction to
+an LLM anywhere in this decision), calls `fn` twice, and raises unless the
+two returned strings are exactly equal. That is the entire equality
+decision. The contract's `extract()` closure returns ONLY the deterministic
+canonical multiset (see `_canonical_requirement_multiset`/
+`_normalize_target`/`_normalize_type` in contracts/permitgrid.py) — no LLM
+judgment, no tolerance, no semantic/abbreviation matching, anywhere in the
+comparison.
 
-What this does NOT prove: that a real LLM validator, given the same
-regulatory source text, would independently produce a JSON extraction
-whose `consensus_key` genuinely matches or mismatches as these fixtures
-assert — that still requires a real multi-validator GenVM run (Docker +
-`genlayer up`, see test/test_consensus_localnet.py). What this DOES prove,
-for real, with no mocks around the decision logic itself: that the
-contract's actual consensus-comparison RULE — exact multiset equality on
-(type, mandatory, normalized_target), cardinality preserved, no
+What this does NOT prove: that a real LLM extraction step, given the same
+regulatory source text, would independently produce a JSON extraction that
+converges as these fixtures assert — that still requires a real
+multi-validator GenVM run (Docker + `genlayer up`, see
+test/test_consensus_localnet.py). What this DOES prove, for real, with no
+mocks around the decision logic itself: that the contract's actual
+consensus mechanism — programmatic Python equality on the canonical
+(type, mandatory, normalized_target) multiset, cardinality preserved, no
 tolerance — behaves exactly as specified for a fixed pair of leader/
-validator outputs, and that a genuine mismatch commits nothing.
+validator LLM outputs, and that a genuine mismatch commits nothing.
 """
 
 import importlib.util
@@ -59,23 +59,23 @@ def _load_contract_module():
 
     class _eq_principle:
         @staticmethod
-        def prompt_comparative(fn, principle=""):
-            """Faithful two-call seam — see module docstring. Calls `fn`
-            twice (leader, then validator), compares their real
-            `consensus_key` fields with exact equality (mirroring the
-            no-tolerance mechanical rule given to the real LLM comparator),
-            and raises on any mismatch — simulating GenVM's revert-the-
-            whole-transaction behavior on validator disagreement."""
-            leader_raw = fn()
-            validator_raw = fn()
-            leader_key = json.loads(leader_raw).get("consensus_key")
-            validator_key = json.loads(validator_raw).get("consensus_key")
-            if leader_key != validator_key:
+        def strict_eq(fn):
+            """Faithful re-creation of the real `genlayer.eq_principle.
+            strict_eq`: single-argument, no `principle` text anywhere.
+            Calls `fn` once standing in for the leader and once more
+            standing in for an independently-sandboxed validator
+            re-execution, then does real Python `==` on the two returned
+            strings — no LLM, no tolerance, no semantic judgment. Raises on
+            any mismatch, simulating GenVM's revert-the-whole-transaction
+            behavior on validator disagreement."""
+            leaders_res = fn()
+            my_res = fn()
+            if my_res != leaders_res:
                 raise Exception(
                     "CONSENSUS_NON_CONVERGENCE: validators disagree on the "
                     "extracted requirement set"
                 )
-            return leader_raw
+            return leaders_res
 
     class _FakeGL:
         class message:
@@ -189,15 +189,14 @@ def _register_provider(c, pid="PRV-1", name="Test Electric Co"):
     c.create_credential_submission(pid, CREDENTIAL_SOURCES)
 
 
-def _req(rid, rtype, target, mandatory=True, scope="s", verif="v"):
-    return {
-        "requirement_id": rid,
-        "type": rtype,
-        "mandatory": mandatory,
-        "target_value": target,
-        "scope_summary": scope,
-        "verification_target": verif,
-    }
+def _req(rtype, target, mandatory=True):
+    """A requirement exactly as the LLM extraction prompt is now asked to
+    return it: only `type`, `mandatory`, `target_value` — no
+    `requirement_id`/`scope_summary`/`verification_target`, since those are
+    no longer part of the LLM output the contract trusts (they are
+    deterministically synthesized post-consensus from the agreed canonical
+    multiset)."""
+    return {"type": rtype, "mandatory": mandatory, "target_value": target}
 
 
 def _reqs_json(*reqs):
@@ -207,8 +206,8 @@ def _reqs_json(*reqs):
 def _extract_two_call(c, wo_id, leader_json, validator_json):
     """Queues the leader's and validator's raw exec_prompt responses (each
     consumed by exactly one of the two real `extract()` calls the fake
-    `prompt_comparative` above makes) and runs the real
-    `extract_requirements` write method."""
+    `strict_eq` above makes) and runs the real `extract_requirements` write
+    method — the actual production code path, unmodified."""
     queue = [leader_json, validator_json]
 
     def _next(task):
@@ -232,25 +231,25 @@ def test_leader_two_requirements_validator_one_disagrees_no_commit():
     c = _new_contract()
     _register_work_order(c)
     leader = _reqs_json(
-        _req("REQ-01", "LICENCE_CLASS", "C-10"),
-        _req("REQ-02", "LICENCE_STATUS", "Active"),
+        _req("LICENCE_CLASS", "C-10"),
+        _req("LICENCE_STATUS", "Active"),
     )
-    validator = _reqs_json(_req("REQ-01", "LICENCE_CLASS", "C-10"))
+    validator = _reqs_json(_req("LICENCE_CLASS", "C-10"))
     with pytest.raises(Exception, match="CONSENSUS_NON_CONVERGENCE"):
         _extract_two_call(c, "WO-1", leader, validator)
     _assert_no_commit(c, "WO-1")
 
 
-# ---- 2. validator has an extra requirement --------------------------------
+# ---- 2. validator has an extra requirement (leader=1/validator=2) --------
 
 
 def test_validator_extra_requirement_disagrees_no_commit():
     c = _new_contract()
     _register_work_order(c)
-    leader = _reqs_json(_req("REQ-01", "LICENCE_CLASS", "C-10"))
+    leader = _reqs_json(_req("LICENCE_CLASS", "C-10"))
     validator = _reqs_json(
-        _req("REQ-01", "LICENCE_CLASS", "C-10"),
-        _req("REQ-02", "COMPANY_REGISTRATION", "Active"),
+        _req("LICENCE_CLASS", "C-10"),
+        _req("COMPANY_REGISTRATION", "Active"),
     )
     with pytest.raises(Exception, match="CONSENSUS_NON_CONVERGENCE"):
         _extract_two_call(c, "WO-1", leader, validator)
@@ -263,8 +262,8 @@ def test_validator_extra_requirement_disagrees_no_commit():
 def test_same_type_different_target_disagrees_no_commit():
     c = _new_contract()
     _register_work_order(c)
-    leader = _reqs_json(_req("REQ-01", "LICENCE_CLASS", "C-10"))
-    validator = _reqs_json(_req("REQ-01", "LICENCE_CLASS", "C-20"))
+    leader = _reqs_json(_req("LICENCE_CLASS", "C-10"))
+    validator = _reqs_json(_req("LICENCE_CLASS", "C-20"))
     with pytest.raises(Exception, match="CONSENSUS_NON_CONVERGENCE"):
         _extract_two_call(c, "WO-1", leader, validator)
     _assert_no_commit(c, "WO-1")
@@ -276,8 +275,8 @@ def test_same_type_different_target_disagrees_no_commit():
 def test_same_type_target_different_mandatory_disagrees_no_commit():
     c = _new_contract()
     _register_work_order(c)
-    leader = _reqs_json(_req("REQ-01", "LICENCE_CLASS", "C-10", mandatory=True))
-    validator = _reqs_json(_req("REQ-01", "LICENCE_CLASS", "C-10", mandatory=False))
+    leader = _reqs_json(_req("LICENCE_CLASS", "C-10", mandatory=True))
+    validator = _reqs_json(_req("LICENCE_CLASS", "C-10", mandatory=False))
     with pytest.raises(Exception, match="CONSENSUS_NON_CONVERGENCE"):
         _extract_two_call(c, "WO-1", leader, validator)
     _assert_no_commit(c, "WO-1")
@@ -293,10 +292,10 @@ def test_duplicate_requirement_count_mismatch_disagrees_no_commit():
     c = _new_contract()
     _register_work_order(c)
     leader = _reqs_json(
-        _req("REQ-01", "LICENCE_CLASS", "C-10"),
-        _req("REQ-02", "LICENCE_CLASS", "C-10"),  # same triple, twice
+        _req("LICENCE_CLASS", "C-10"),
+        _req("LICENCE_CLASS", "C-10"),  # same triple, twice
     )
-    validator = _reqs_json(_req("REQ-01", "LICENCE_CLASS", "C-10"))  # only once
+    validator = _reqs_json(_req("LICENCE_CLASS", "C-10"))  # only once
     with pytest.raises(Exception, match="CONSENSUS_NON_CONVERGENCE"):
         _extract_two_call(c, "WO-1", leader, validator)
     _assert_no_commit(c, "WO-1")
@@ -308,8 +307,8 @@ def test_duplicate_requirement_count_mismatch_disagrees_no_commit():
 def test_reordered_identical_requirements_converges():
     c = _new_contract()
     _register_work_order(c)
-    a = _req("REQ-01", "LICENCE_CLASS", "C-10")
-    b = _req("REQ-02", "LICENCE_STATUS", "Active")
+    a = _req("LICENCE_CLASS", "C-10")
+    b = _req("LICENCE_STATUS", "Active")
     leader = _reqs_json(a, b)
     validator = _reqs_json(b, a)  # reversed order, same multiset
     _extract_two_call(c, "WO-1", leader, validator)
@@ -320,34 +319,17 @@ def test_reordered_identical_requirements_converges():
     assert len(rs["requirements"]) == 2
 
 
-# ---- 7. differing incidental fields only: consensus succeeds --------------
+# ---- 7. target differing only by normalized-away case/whitespace ---------
 
 
-def test_differing_incidental_fields_only_converges():
-    """Different requirement_id/scope_summary/verification_target wording,
-    and target_value differing only by case/whitespace (normalized to the
-    same value), must not block consensus — those fields are deliberately
-    out of comparison scope, and normalization is deterministic."""
+def test_normalization_equivalent_targets_converge():
+    """Target values differing only by case/whitespace/Unicode form
+    (normalized to the same value by deterministic code) must not block
+    consensus — this is normalization, not semantic/abbreviation matching."""
     c = _new_contract()
     _register_work_order(c)
-    leader = _reqs_json(
-        _req(
-            "REQ-01",
-            "LICENCE_CLASS",
-            "  C-10  ",
-            scope="wiring work",
-            verif="check license class",
-        )
-    )
-    validator = _reqs_json(
-        _req(
-            "REQ-A",
-            "LICENCE_CLASS",
-            "c-10",
-            scope="totally different phrasing of the same finding",
-            verif="a differently worded verification target",
-        )
-    )
+    leader = _reqs_json(_req("LICENCE_CLASS", "  C-10  "))
+    validator = _reqs_json(_req("LICENCE_CLASS", "c-10"))
     _extract_two_call(c, "WO-1", leader, validator)
     wo = c.get_work_order("WO-1")
     assert wo["status"] == "REQUIREMENTS_ACTIVE"
@@ -361,8 +343,8 @@ def test_disagreement_leaves_clean_fail_closed_state():
     c = _new_contract()
     _register_work_order(c)
     _register_provider(c)
-    leader = _reqs_json(_req("REQ-01", "LICENCE_CLASS", "C-10"))
-    validator = _reqs_json(_req("REQ-01", "LICENCE_CLASS", "C-20"))
+    leader = _reqs_json(_req("LICENCE_CLASS", "C-10"))
+    validator = _reqs_json(_req("LICENCE_CLASS", "C-20"))
     with pytest.raises(Exception, match="CONSENSUS_NON_CONVERGENCE"):
         _extract_two_call(c, "WO-1", leader, validator)
 
@@ -379,14 +361,40 @@ def test_disagreement_leaves_clean_fail_closed_state():
         c.assess_provider("WO-1", "PRV-1")
 
 
-# ---- 9. a source update invalidates the active requirement set -----------
+# ---- 9. no partial leader extraction is ever written before consensus ----
+
+
+def test_disagreement_writes_nothing_to_storage_before_consensus():
+    """The leader's extraction result must never be persisted to storage
+    ahead of / independent of the validator's agreement — verifies no
+    requirement history entry, no requirement-set version bump, and no
+    lingering work-order status change exists after a raised disagreement,
+    confirming the contract never writes leader-only state before the
+    equality check completes."""
+    c = _new_contract()
+    _register_work_order(c)
+    before = c.get_work_order("WO-1")
+    leader = _reqs_json(
+        _req("LICENCE_CLASS", "C-10"),
+        _req("LICENCE_STATUS", "Active"),
+    )
+    validator = _reqs_json(_req("LICENCE_CLASS", "C-10"))
+    with pytest.raises(Exception, match="CONSENSUS_NON_CONVERGENCE"):
+        _extract_two_call(c, "WO-1", leader, validator)
+    after = c.get_work_order("WO-1")
+    assert after["status"] == before["status"]
+    assert after["requirement_version"] == before["requirement_version"] == 0
+    assert c.get_requirement_history("WO-1") == []
+
+
+# ---- 10. a source update invalidates the active requirement set ----------
 
 
 def test_source_update_invalidates_active_requirement_set_until_replaced():
     c = _new_contract()
     _register_work_order(c)
 
-    req = _req("REQ-01", "LICENCE_CLASS", "C-10")
+    req = _req("LICENCE_CLASS", "C-10")
     _extract_two_call(c, "WO-1", _reqs_json(req), _reqs_json(req))
     wo = c.get_work_order("WO-1")
     assert wo["status"] == "REQUIREMENTS_ACTIVE"
@@ -408,7 +416,7 @@ def test_source_update_invalidates_active_requirement_set_until_replaced():
 
     # A successful replacement extraction restores REQUIREMENTS_ACTIVE at
     # the new source_version, with a new, current requirement_version.
-    req2 = _req("REQ-01", "LICENCE_CLASS", "C-10")
+    req2 = _req("LICENCE_CLASS", "C-10")
     _extract_two_call(c, "WO-1", _reqs_json(req2), _reqs_json(req2))
     wo3 = c.get_work_order("WO-1")
     assert wo3["status"] == "REQUIREMENTS_ACTIVE"
