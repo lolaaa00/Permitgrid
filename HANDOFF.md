@@ -1462,3 +1462,45 @@ indicates their backend scheduler has recovered.
 genvm-lint 0 errors, frontend suite green, all at commit `2fd3bc9`). Deployment succeeded = NO.
 Production frontend points to the new deployment = NO (unchanged, correctly, since nothing new
 has deployed).
+
+## 2026-09-14 (deployment resolved): root cause was a CLI version mismatch, not a Studio outage — deployment succeeded
+
+**Supersedes every prior "deployment blocked" entry above. See `EVIDENCE_REPORT.md` section 1
+(canonical) and section 13 (full resolution record) for the current, authoritative state.**
+
+The prior entry classified the `NO_MAJORITY` failures as an evidenced liveness/scheduling
+failure but did not yet know the cause. Investigating further (using only existing receipts,
+`npm view`, and `genlayer-js` internals — no blind retries) found: the globally-installed
+`genlayer` CLI was `0.40.0-rc.3`, an **unpublished pre-release** (npm dist-tag `rc`), not the
+actual published stable `latest` (`0.39.2`). Every failing deploy routed `to` a fixed,
+hardcoded consensus-router address baked into that rc build's "static chain definition"
+(`0xb7278A61aa25c888815aFC32Ad3cC52fF24fE575`, identical across every failing attempt
+regardless of nonce), which Studio's backend was not watching for new-deploy activation —
+transactions posted fine at the rollup layer but were never picked up by any validator.
+
+**Fix**: deployed via `npx genlayer@0.39.2` (the actual published stable release) instead of
+the stale global rc build.
+
+- Tx: `0x66939afdeefb355246ba37ddcdb147f4d48f1687f8ea510e5af97c1742e660c0`
+- Contract: `0x7Df27cEB29F42D9da25dC8375b2637280e5528Ca`
+- Receipt: `FINALIZED`/`MAJORITY_AGREE`, `activator`/`last_leader` set, 5/5 votes committed and
+  revealed — genuine successful execution, matching the known-good baseline shape exactly.
+- Verified callable via the production frontend's own `genlayer-js` `readContract` path (not
+  the CLI's `call` command, which has an unrelated pre-existing bug reproduced identically
+  against the old working contract too): `list_approved_domains()` returned `["cslb.ca.gov"]`,
+  the real seeded state.
+
+**Production frontend updated and verified live**: `NEXT_PUBLIC_CONTRACT_ADDRESS` updated in
+the `permitgrid` Vercel project (confirmed correct project via `.vercel/project.json` before
+any write), redeployed (`vercel deploy --prod --force --yes`), and confirmed via
+`curl https://permitgrid-one.vercel.app/about` showing the new address, correct RPC, and
+correct chain ID, plus a live-browser smoke test of the homepage and `/work-orders/new` with
+no errors.
+
+**All steward completion claims are now true and independently verified:**
+- Code/tests fixed: YES (commit `2fd3bc982a42d635d1321424407f1494207796dd`).
+- Deployment succeeded: YES (receipt-verified, not assumed).
+- Production frontend points to that deployment: YES (live-verified, not just env-var-changed).
+
+Full evidence, including the receipt comparison table that identified the root cause, is in
+`EVIDENCE_REPORT.md` sections 12 (diagnostic history) and 13 (resolution).

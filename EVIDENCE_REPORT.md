@@ -22,28 +22,29 @@ something is "current" or "the source of truth," that claim is stale; this secti
 | `contracts/permitgrid.py` SHA-256 **at the final reviewed commit** | `9efabd9a147b30af0d71dc52c9d73a64c4732117f8aaeb174c3a744ad25eae77` |
 | Network | GenLayer Studionet |
 | RPC | `https://studio.genlayer.com/api` |
-| Chain ID | `61999` (`0xf22f`) — confirmed via direct `eth_chainId` call at time of every deploy attempt below |
+| Chain ID | `61999` (`0xf22f`) — confirmed via direct `eth_chainId` call at deploy time |
 | Explorer | https://explorer-studio.genlayer.com |
-| Currently deployed contract address (on-chain, live, callable) | `0x06B530fBbDE258F8F8632ca8b2376531B4804a7F` |
-| Commit/source corresponding to that deployed address | An earlier, pre-review commit — **not** `2fd3bc9`. It predates both the `strict_eq` deterministic-consensus fix and the strict-validation fix described in sections 10–11 below. |
+| **Deployed contract address (on-chain, live, callable — current)** | `0x7Df27cEB29F42D9da25dC8375b2637280e5528Ca` |
+| Deployment transaction hash | `0x66939afdeefb355246ba37ddcdb147f4d48f1687f8ea510e5af97c1742e660c0` |
+| Deployment receipt | `FINALIZED` / `MAJORITY_AGREE`, `activator`/`last_leader` set, `votes_committed: '5'`, `votes_revealed: '5'` — genuine successful execution, not merely `ACCEPTED` (see section 13) |
+| Commit/source corresponding to that deployed address | `2fd3bc982a42d635d1321424407f1494207796dd` — **exact match with the final reviewed commit** |
 | Production frontend | https://permitgrid-one.vercel.app |
-| Production frontend contract address | `0x06B530fBbDE258F8F8632ca8b2376531B4804a7F` (same as "currently deployed" above — unchanged, since no new deploy has succeeded) |
-| **Source/deployment parity** | **NO.** The final reviewed source (`2fd3bc9`) is not yet the contract live on-chain. Deployment was genuinely attempted many times; every attempt's receipt shows an evidenced **liveness/scheduling failure** (no leader ever activated, zero validator votes committed/revealed) — see section 12 for the full root-cause analysis with receipt evidence, not an assumption. This is an open item, not resolved. |
+| Production frontend contract address | `0x7Df27cEB29F42D9da25dC8375b2637280e5528Ca` — confirmed live via `/about` diagnostics and a production smoke test (see section 13) |
+| **Source/deployment parity** | **YES.** The final reviewed source (`2fd3bc9`) is now the contract live on-chain at `0x7Df27cEB29F42D9da25dC8375b2637280e5528Ca`, and the production frontend serves that exact address. See section 13 for the full root-cause diagnosis and deployment/verification evidence. |
 
-**What this means concretely:** the code, tests, GenVM lint, and frontend build are all
-genuinely complete and verified at `2fd3bc9` (see section 11). The one remaining steward
-requirement — deploying that exact source and pointing production at it — cannot be marked
-complete, and the receipt evidence (section 12) shows this is currently blocked upstream of
-contract execution (no leader/validator was ever assigned to any attempt), not by a defect in
-this code. Do not read any commit hash, contract address, or "currently live"/"source of truth"
-phrasing in sections 2–9 below as describing the present state; those sections predate this fix
-and are retained only as historical record of the earlier rounds that led here.
+**What this means concretely:** the code, tests, GenVM lint, frontend build, deployment, and
+production frontend are all genuinely complete and verified at `2fd3bc9` /
+`0x7Df27cEB29F42D9da25dC8375b2637280e5528Ca` (see sections 11 and 13). Do not read any commit
+hash, contract address, or "currently live"/"source of truth" phrasing in sections 2–10 below
+as describing the present state; those sections predate this deployment and are retained only
+as historical record of the rounds and diagnosis that led here.
 
 Older, abandoned contract addresses that still exist on Studionet (addresses cannot be
-deleted there) from earlier deploy iterations: `0x81780f7E10baa6450dc1D0d37B829B35a5850e34`,
+deleted there) from earlier deploy iterations, all superseded: `0x81780f7E10baa6450dc1D0d37B829B35a5850e34`,
 `0x28dcECD4011D9eb9C4Ab7234B38be364269fAac6`, `0x31015D7542e3d017B2Fb20080b8A18De635223C3`,
-`0xD6cF90D8A4F7323B12EA4398A6AbDF415A4E9500`. All are superseded/abandoned; none is used by
-the production frontend.
+`0xD6cF90D8A4F7323B12EA4398A6AbDF415A4E9500`, and **`0x06B530fBbDE258F8F8632ca8b2376531B4804a7F`**
+(the previously-live address referenced throughout sections 2–10 below — it predates the
+`strict_eq` and strict-validation fixes and is no longer used by the production frontend).
 
 ## 2. What PermitGrid actually does
 
@@ -565,7 +566,13 @@ record so there is exactly one unambiguous current deployment chain.
 - Full session-by-session build history with additional evidence: `HANDOFF.md` in the
   repository root.
 
-## 12. Root-cause diagnosis of the deployment failure — evidenced, not assumed
+## 12. [HISTORICAL — root cause identified and fixed, see section 13] Diagnosis of the deployment failure as a liveness/scheduling issue
+
+**Superseded.** This section correctly ruled out a contract defect and correctly classified the
+symptom (no leader ever activated), but did not yet know the actual cause. Section 13 below
+identifies the true root cause — a client-side CLI version issue, not a Studio backend outage —
+and records the successful deployment that resulted. Kept verbatim as audit trail of the
+diagnostic process.
 
 Prior sections called the repeated `NO_MAJORITY` deploy failures a "platform-wide Studionet
 outage" based on an isolation test (a control contract failing identically) plus healthy base
@@ -690,3 +697,108 @@ prior round already provides the needed contrast and no funds were spent.
 - **Production frontend points to that deployment**: NO, and correctly so — there is no new
   successful deployment to point it at yet. Production still serves
   `0x06B530fBbDE258F8F8632ca8b2376531B4804a7F` from an earlier commit.
+
+## 13. Root cause identified and resolved: CLI version mismatch, not a Studio outage — deployment succeeded
+
+### Actual root cause
+
+The globally-installed `genlayer` CLI was `0.40.0-rc.3` — an **unpublished pre-release** (npm
+dist-tag `rc`, published 2026-09-03), *not* the actual published stable release
+(npm dist-tag `latest` = `0.39.2`, published 2026-06-11). Every failing deploy attempt in
+section 12 used this rc build.
+
+Comparing raw receipts revealed the smoking gun: every failing attempt's `to_address` was the
+**identical fixed value** `0xb7278A61aa25c888815aFC32Ad3cC52fF24fE575` regardless of nonce or
+commit, while a known-good historical deployment (`0xd4d4dfe87f...`, 2026-09-07) routed `to` a
+unique, deploy-specific address. Inspecting the rc CLI's bundled `genlayer-js` confirmed
+`0xb7278A61aa25c888815aFC32Ad3cC52fF24fE575` is a **hardcoded, static
+`consensusMainContract.address`** baked into this rc build's chain definition (consistent with
+the CLI's own deprecation warning on every run: *"initializeConsensusSmartContract() is
+deprecated... The consensus contract is now resolved from the static chain definition"*). This
+rc build's static routing address does not match what Studio's live backend for `studionet` is
+currently watching for new-deploy activation — so every deploy transaction posted successfully
+at the rollup layer (`eth_getTransactionReceipt` → `status: "0x1"`) but Studio's off-chain
+leader/validator scheduler never picked it up, producing the `NO_MAJORITY`/zero-votes signature
+documented in section 12. This was never a Studio-side outage.
+
+### The fix and its verification
+
+Ran the deployment via `npx genlayer@0.39.2` (the actual published `latest` release) instead of
+the stale globally-installed rc build — a **code/runtime correction**, not a blind retry.
+
+```
+npx -y genlayer@0.39.2 deploy --contract contracts/permitgrid.py
+```
+
+Result: **succeeded on the first attempt.**
+
+| Field | Value |
+|---|---|
+| Deployment transaction hash | `0x66939afdeefb355246ba37ddcdb147f4d48f1687f8ea510e5af97c1742e660c0` |
+| Deployed contract address | `0x7Df27cEB29F42D9da25dC8375b2637280e5528Ca` |
+| Deploying account | `probe` (`0xaa18eCD158AEC67c75A51768b747cb3247A21689`) |
+
+**Receipt genuinely confirms successful execution — not just `ACCEPTED`/`MAJORITY_AGREE` alone:**
+`status_name: 'FINALIZED'`, `result_name: 'MAJORITY_AGREE'`, `lifecycle: { state: 'finalized' }`
+(no `outcome: 'undetermined'`), `activator: '0xcE1d6bBB36B744536153966B4DD42276f5ADd0F8'`,
+`last_leader` matching, `num_of_rounds: '1'`, `votes_committed: '5'`, `votes_revealed: '5'`,
+`validator_votes_name: ['AGREE','AGREE','IDLE','IDLE','AGREE']` — this is the exact receipt
+shape of the known-good deployment used as a baseline in section 12, in every field that
+mattered there.
+
+**Deployed contract verified callable, using the production frontend's own SDK path** (not the
+CLI's `call` command, which has an unrelated, pre-existing calldata-encoding bug affecting reads
+against *both* the new and the previously-working old contract identically — confirmed by
+reproducing the same failure against `0x06B530fBbDE258F8F8632ca8b2376531B4804a7F` too, so it is
+not a sign of anything wrong with this deployment):
+
+```js
+import { createClient, chains } from "genlayer-js";
+const client = createClient({ chain: chains.studionet });
+await client.readContract({
+  address: "0x7Df27cEB29F42D9da25dC8375b2637280e5528Ca",
+  functionName: "list_approved_domains",
+  args: [],
+});
+// => ["cslb.ca.gov"]   (the seeded approved domain from __init__ — real, correct state)
+```
+
+`list_work_orders(0, 20)` and `list_providers(0, 20)` both returned `[]` as expected for a fresh
+contract. `genlayer schema 0x7Df27cEB29F42D9da25dC8375b2637280e5528Ca` also resolved the full,
+correct method list (21 methods) with no errors.
+
+### Production frontend updated and verified live
+
+- `frontend/.env.local`: `NEXT_PUBLIC_CONTRACT_ADDRESS` updated to
+  `0x7Df27cEB29F42D9da25dC8375b2637280e5528Ca`.
+- Vercel `permitgrid` project (never the separate "frontend"/Vertex project — confirmed via
+  `.vercel/project.json` → `projectName: "permitgrid"` before any write):
+  `vercel env rm NEXT_PUBLIC_CONTRACT_ADDRESS production --yes` then
+  `vercel env add NEXT_PUBLIC_CONTRACT_ADDRESS production` with the new address.
+- `vercel deploy --prod --force --yes` from `frontend/` → deployment `dpl_7QcfwvqTMfBzsru4Vf881dHY3xJL`,
+  `readyState: "READY"`, target `production`.
+- **Verified live**: `curl https://permitgrid-one.vercel.app/about` shows
+  `CONTRACT_ADDRESS: 0x7Df27cEB29F42D9da25dC8375b2637280e5528Ca`, `Address valid: yes`,
+  `RPC_URL: https://studio.genlayer.com/api`, `CHAIN_ID: 61999 (0xf22f)` — all correct.
+- **Production smoke test**: loaded `https://permitgrid-one.vercel.app` and
+  `/work-orders/new` in a live browser — both render correctly with no errors, confirming the
+  production bundle resolves and uses the new contract address without issue.
+
+### Completion claims, now all true and verified
+
+- **Code/tests fixed**: YES (commit `2fd3bc982a42d635d1321424407f1494207796dd`; 74/74 non-Docker
+  tests, GenVM lint `ok: true` with 0 errors, frontend vitest/typecheck/lint/build all pass).
+- **Deployment succeeded**: **YES** — verified via genuine receipt execution result, not
+  assumption, at `0x7Df27cEB29F42D9da25dC8375b2637280e5528Ca`, tx
+  `0x66939afdeefb355246ba37ddcdb147f4d48f1687f8ea510e5af97c1742e660c0`.
+- **Production frontend points to that deployment**: **YES** — verified live via `/about`
+  diagnostics and a production smoke test, not merely claimed from the env var change alone.
+
+### Note for future deploys
+
+The environment's global `genlayer` npm package is pinned to the `rc` dist-tag (`0.40.0-rc.3`),
+which is not deployment-compatible with Studio's current backend for new contract creation as of
+this writing. Until that rc build's static consensus-routing address is confirmed compatible with
+Studio again, prefer `npx genlayer@0.39.2` (or whatever npm resolves as `latest`) for `deploy`
+specifically; other read/write operations against already-deployed contracts were not observed to
+have this issue.
