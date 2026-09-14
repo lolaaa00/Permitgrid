@@ -1423,3 +1423,42 @@ genuine successful leader execution (not just `ACCEPTED`), verify the address is
 production environment, redeploy the frontend (`vercel deploy --prod --force --yes` from
 `frontend/`), verify `/about` shows the new address, run a production smoke test, then update
 `EVIDENCE_REPORT.md` section 1 with the successful deployment record.
+
+## 2026-09-14 (root-cause diagnosis): deployment failure classified as evidenced liveness/scheduling failure, not assumed outage
+
+Previously the repeated `NO_MAJORITY` deploy failures were called a "platform-wide outage" based
+on an isolation test plus healthy base RPC. Re-examined this using only existing transaction
+receipts (`genlayer receipt --raw <tx>`) — no new deployment was made.
+
+**Finding, evidenced not assumed:** every recent failing receipt (commit `2fd3bc9`, txs
+`0xc1240408...`, `0x43b26217...`, `0x37fea32b...`, `0x82231588...`) shows `activator: ''`,
+`last_leader: ''`, `num_of_rounds: '0'`, `votes_committed: '0'`, `votes_revealed: '0'`,
+`consensus_data: null` — GenVM never assigned a leader or validator to any of these
+transactions, so contract execution was never even reached. Contrasted against a known-good
+receipt on the same network (`0xd4d4dfe87f...`, from an earlier successful redeploy): activator
+and leader both set, `num_of_rounds: '1'`, 5/5 votes committed and revealed, six
+`execution_result: 'SUCCESS'` entries.
+
+This is a **liveness/scheduling failure** (no activation/no validator participation), not a
+semantic disagreement, not a leader-execution/constructor failure, and not something a contract
+code change can fix — GenVM's execution layer was never reached in any failing attempt.
+Confirmed `genlayer staking active-validators`/`epoch-info` report "Staking is not supported on
+studio-based networks" — Studionet's validator assignment is a Studio-managed backend service,
+not inspectable further from client tooling; that is the actual boundary of available evidence.
+
+Ruled out via evidence: wrong network/chain ID (chain ID confirmed `0xf22f` via direct
+`eth_chainId`), payload/source mismatch (working-tree SHA-256 matches `2fd3bc9`, clean git
+status), constructor-argument mismatch (`genvm-lint check` confirms 0 ctor params, matching the
+`--args []` used), and a contract-specific defect (an unmodified stock sample contract produces
+the identical empty-activation signature).
+
+Full evidence table, contrast receipt, and per-field ruling-out is in `EVIDENCE_REPORT.md`
+section 12. Per that analysis: stopped blind timer-based retries (they produce no new
+information — four consecutive attempts show identical evidence); next retry should happen only
+when a fresh receipt shows a non-empty `activator`, or GenLayer's own status/support channel
+indicates their backend scheduler has recovered.
+
+**Completion claims kept separate, as required:** code/tests fixed = YES (74/74 tests,
+genvm-lint 0 errors, frontend suite green, all at commit `2fd3bc9`). Deployment succeeded = NO.
+Production frontend points to the new deployment = NO (unchanged, correctly, since nothing new
+has deployed).

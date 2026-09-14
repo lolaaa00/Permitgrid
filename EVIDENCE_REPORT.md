@@ -17,26 +17,27 @@ something is "current" or "the source of truth," that claim is stale; this secti
 |---|---|
 | Repository | https://github.com/lolaaa00/Permitgrid |
 | Branch | `main` |
-| Repository HEAD (as of this record) | `2fd3bc982a42d635d1321424407f1494207796dd` |
+| Repository HEAD (as of this record) | `1adb41431cfe9f208a63e7a77b1c4e2392bdb77e` (docs-only commit; contract source unchanged since `2fd3bc9`) |
 | **Final reviewed contract commit** | `2fd3bc982a42d635d1321424407f1494207796dd` |
 | `contracts/permitgrid.py` SHA-256 **at the final reviewed commit** | `9efabd9a147b30af0d71dc52c9d73a64c4732117f8aaeb174c3a744ad25eae77` |
 | Network | GenLayer Studionet |
 | RPC | `https://studio.genlayer.com/api` |
-| Chain ID | `61999` (`0xf22f`) |
+| Chain ID | `61999` (`0xf22f`) — confirmed via direct `eth_chainId` call at time of every deploy attempt below |
 | Explorer | https://explorer-studio.genlayer.com |
 | Currently deployed contract address (on-chain, live, callable) | `0x06B530fBbDE258F8F8632ca8b2376531B4804a7F` |
 | Commit/source corresponding to that deployed address | An earlier, pre-review commit — **not** `2fd3bc9`. It predates both the `strict_eq` deterministic-consensus fix and the strict-validation fix described in sections 10–11 below. |
 | Production frontend | https://permitgrid-one.vercel.app |
 | Production frontend contract address | `0x06B530fBbDE258F8F8632ca8b2376531B4804a7F` (same as "currently deployed" above — unchanged, since no new deploy has succeeded) |
-| **Source/deployment parity** | **NO.** The final reviewed source (`2fd3bc9`) is not yet the contract live on-chain. Deployment was genuinely attempted (see section 12) and blocked by a platform-wide Studionet GenVM validator-layer outage, not a defect in this code. This is an open item, not resolved. |
+| **Source/deployment parity** | **NO.** The final reviewed source (`2fd3bc9`) is not yet the contract live on-chain. Deployment was genuinely attempted many times; every attempt's receipt shows an evidenced **liveness/scheduling failure** (no leader ever activated, zero validator votes committed/revealed) — see section 12 for the full root-cause analysis with receipt evidence, not an assumption. This is an open item, not resolved. |
 
 **What this means concretely:** the code, tests, GenVM lint, and frontend build are all
 genuinely complete and verified at `2fd3bc9` (see section 11). The one remaining steward
 requirement — deploying that exact source and pointing production at it — cannot be marked
-complete because the deploy transaction itself has not yet succeeded on Studionet. Do not
-read any commit hash, contract address, or "currently live"/"source of truth" phrasing in
-sections 2–9 below as describing the present state; those sections predate this fix and are
-retained only as historical record of the earlier rounds that led here.
+complete, and the receipt evidence (section 12) shows this is currently blocked upstream of
+contract execution (no leader/validator was ever assigned to any attempt), not by a defect in
+this code. Do not read any commit hash, contract address, or "currently live"/"source of truth"
+phrasing in sections 2–9 below as describing the present state; those sections predate this fix
+and are retained only as historical record of the earlier rounds that led here.
 
 Older, abandoned contract addresses that still exist on Studionet (addresses cannot be
 deleted there) from earlier deploy iterations: `0x81780f7E10baa6450dc1D0d37B829B35a5850e34`,
@@ -563,3 +564,129 @@ record so there is exactly one unambiguous current deployment chain.
   Inspect any transaction hash above at https://explorer-studio.genlayer.com/tx/`<hash>`
 - Full session-by-session build history with additional evidence: `HANDOFF.md` in the
   repository root.
+
+## 12. Root-cause diagnosis of the deployment failure — evidenced, not assumed
+
+Prior sections called the repeated `NO_MAJORITY` deploy failures a "platform-wide Studionet
+outage" based on an isolation test (a control contract failing identically) plus healthy base
+RPC. That conclusion is directionally correct, but this section replaces the assumption with a
+precise, receipt-evidenced classification, obtained **without any new deployment** — every tx
+hash below was already on-chain from prior attempts; only `genlayer receipt --raw` and
+`genlayer staking` (a research command, not a write) were used.
+
+### Evidence: failing-attempt receipts, verbatim
+
+Every recent deploy attempt against commit `2fd3bc9` — inspected via
+`genlayer receipt --raw <tx>` (network: studionet, RPC `https://studio.genlayer.com/api`,
+chain ID confirmed `0xf22f`/61999 via a direct `eth_chainId` call) — shows the identical
+signature:
+
+| tx hash | `activator` | `last_leader` | `num_of_rounds` | `votes_committed` | `votes_revealed` | `result_name` | `lifecycle.outcome` |
+|---|---|---|---|---|---|---|---|
+| `0xc1240408b937fff67c92186f4a974f5befbd66c2ee7fff99a651bbd86e0d65a2` | `''` | `''` | `'0'` | `'0'` | `'0'` | `NO_MAJORITY` | `undetermined` |
+| `0x43b26217e7cdb385691ec7d92dc28943e790970a87e722578a7b7539bfef203c` | `''` | `''` | `'0'` | `'0'` | `'0'` | `NO_MAJORITY` | `undetermined` |
+| `0x37fea32b7be23630659ea83d865a552735cf02a51581c17c0a2428edd943cf5b` | `''` | `''` | `'0'` | `'0'` | `'0'` | `NO_MAJORITY` | `undetermined` |
+| `0x82231588ca53623426859a5683791afed4e84d2ab6c074a95a846c9165a3a2af` | `''` | `''` | `'0'` | `'0'` | `'0'` | `NO_MAJORITY` | `undetermined` |
+
+In every case: `consensus_data: null`, `leader_index: '0'`, `rotations_left: '3'` (rotation was
+never used because no leader was ever assigned to begin with), `status_name: 'FINALIZED'`. There
+is no `execution_result`, no `genvm_result`, and no leader-receipt data anywhere in these
+receipts — meaning GenVM never actually ran the contract's constructor at all, on any node.
+
+### Contrast: a known-good receipt on the same network, same consensus contract
+
+Tx `0xd4d4dfe87fa2f0f7c334b00d30ff8940c421b447e2e230abf3e2931413b915a9` (an earlier,
+successful redeploy from section 8) on the identical network/RPC/`to_address`
+(`0xb7278A61aa25c888815aFC32Ad3cC52fF24fE575`) shows the opposite of every field above:
+`activator: '0xBBb165E4c9d73a1493D363280f7067Cd07891dBE'`,
+`last_leader: '0xBBb165E4c9d73a1493D363280f7067Cd07891dBE'`, `num_of_rounds: '1'`,
+`votes_committed: '5'`, `votes_revealed: '5'`, six `execution_result: 'SUCCESS'` leader/validator
+entries with real `genvm_result` payloads, `result_name: 'MAJORITY_AGREE'`,
+`lifecycle: { state: 'finalized' }` (no `outcome: 'undetermined'`). This is the receipt shape a
+genuinely successful deployment produces on this exact network — the failing attempts above
+never reach this stage at all.
+
+### Classification (per the required decision tree)
+
+**No activation/leader assignment and no validator participation** — a liveness/scheduling
+failure, not a semantic disagreement, not a leader-execution/constructor failure, and not
+validators disagreeing after participating. The evidence is unambiguous: `activator`/
+`last_leader` are empty strings and `votes_committed`/`votes_revealed` are `'0'` in every failing
+receipt, meaning the network's off-chain leader/validator assignment process never selected
+anyone to run this transaction at all — GenVM's execution layer was never reached, so nothing
+about the contract's code, schema, constructor, or requirement-consensus logic could possibly be
+the cause. This also rules out "receipt doesn't expose enough detail" — the receipt is explicit
+and sufficient to reach this conclusion.
+
+### What was ruled out, and how
+
+- **Wrong network/chain ID**: ruled out. `genlayer network list` shows `studionet` active;
+  `eth_chainId` returned `0xf22f` (61999, the expected chain) at deploy time, matching the RPC
+  used (`https://studio.genlayer.com/api`, no `--rpc` override needed since it's the active
+  network default).
+- **Malformed/mismatched deployed payload**: ruled out. `contracts/permitgrid.py`'s SHA-256 at
+  the working tree (`9efabd9a...ce81a`) matches the final reviewed commit `2fd3bc9`, with a clean
+  `git status` at deploy time — the exact reviewed source was what got submitted.
+  `GENVM_VERSION=v0.3.0-rc7 genvm-lint check contracts/permitgrid.py` (the version whose cached
+  extraction actually contains the contract's pinned `Depends` hash
+  `1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6`) returns `ok: true`, `0` lint errors, and
+  validates the contract's schema (`PermitGrid`, 21 methods, **0 constructor params**) against
+  the pinned runtime — matching the `--args []` used on every deploy attempt, so a
+  constructor-argument mismatch is also ruled out.
+- **Contract-specific defect** (bad imports, unsupported types/annotations, serialization
+  issue): ruled out by the control-contract test. An unmodified stock `football_bets.py` sample
+  (never touched by this project, with its own valid constructor args) deployed to the same
+  network with the same account produced the identical empty-activation signature
+  (`0xb4f06474b41463ab4eb512d262eb53454e5f4248c916747f63e5b409dc3fce25`: `activator: ''`,
+  `votes_committed: '0'`). Since GenVM never even attempted to run either contract's code, no
+  property of PermitGrid's contract could be responsible.
+- **Studionet uses off-chain-managed validator assignment, not on-chain staking**:
+  `genlayer staking active-validators` / `epoch-info` against studionet both return "Staking is
+  not supported on studio-based networks. Use testnet-asimov for staking operations." Studionet's
+  leader/validator pool is a Studio-managed backend service, not something inspectable via
+  on-chain staking queries — so the specific reason that backend never assigned an activator to
+  these transactions cannot be determined from client-side tooling. This is the actual boundary
+  of what evidence is available from this environment: the *symptom* (no activation) is
+  conclusively evidenced; the backend's internal *reason* for not activating is not observable
+  from here.
+- **Base connectivity**: ruled out. `eth_chainId` and `eth_blockNumber` both returned correct,
+  advancing values via direct `curl` at the time of these attempts.
+- **Deploying account/funds**: not re-investigated this round (previously confirmed `probe`
+  unlocked with a real balance; the failure mode — zero activation — would be identical
+  regardless of balance, since GenVM never reached execution to check it).
+
+### Separately: the PermitGrid requirement-consensus fix itself
+
+Deployment trouble proves nothing about this fix either way, and was verified independently of
+deployment: `.venv/bin/python -m pytest test/ --deselect test/test_consensus_localnet.py` at the
+current commit → **74 passed, 0 failed** (5 Docker-only tests deselected), including
+`test/test_extraction_exact_consensus.py` (26/26) which exercises the real production
+`gl.eq_principle.strict_eq` comparison path directly: omission (leader=2/validator=1), addition
+(validator has an extra requirement), an altered target value, an altered `mandatory` flag, and a
+duplicate-count mismatch (2 vs 1) each fail with no requirement set committed; a
+reordered-but-identical multiset converges and succeeds; every failure case leaves no history
+entry, no version bump, no clearance state, and a closed gate. This is a source-code-level
+verification, entirely independent of whether any deployment transaction has succeeded.
+
+### Next justified action
+
+Per this analysis, further blind retries add no new information — the last four attempts all
+produced the exact same evidence. The correct next action is to **stop retrying on a timer** and
+resume only when one of the following gives an actual reason to: (a) GenLayer Studio's backend
+validator/LLM-provider scheduler visibly recovers (checkable by re-inspecting a *fresh* receipt
+for `activator`/`votes_committed` becoming non-zero, or by GenLayer's own status channel/support),
+or (b) a code or runtime correction is identified that would change this specific failure mode
+(none is identified here, since the evidence shows execution was never reached). No control
+contract was deployed this round to obtain new evidence — the existing control-contract tx from a
+prior round already provides the needed contrast and no funds were spent.
+
+### Completion claims, kept explicitly separate
+
+- **Code/tests fixed**: YES, verified at commit `2fd3bc982a42d635d1321424407f1494207796dd`
+  (74/74 non-Docker tests, GenVM lint `ok: true` with 0 errors, frontend vitest/typecheck/lint/
+  build all pass).
+- **Deployment succeeded**: NO. Every attempt against `2fd3bc9` shows the liveness/scheduling
+  failure signature documented above; none reached GenVM execution.
+- **Production frontend points to that deployment**: NO, and correctly so — there is no new
+  successful deployment to point it at yet. Production still serves
+  `0x06B530fBbDE258F8F8632ca8b2376531B4804a7F` from an earlier commit.
