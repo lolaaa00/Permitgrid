@@ -33,7 +33,7 @@ vi.mock("@/lib/wallet", () => ({
 }));
 
 // Imported after the mocks above are registered.
-const { WorkOrderDetailView } = await import("./page");
+const { WorkOrderDetailView } = await import("./view");
 
 function makeWorkOrder(overrides: Partial<WorkOrder> = {}): WorkOrder {
   return {
