@@ -24,6 +24,20 @@ deleted there — but abandoned; do not use): `0x81780f7E10baa6450dc1D0d37B829B3
 `0xD6cF90D8A4F7323B12EA4398A6AbDF415A4E9500`, `0x06B530fBbDE258F8F8632ca8b2376531B4804a7F`,
 `0x7Df27cEB29F42D9da25dC8375b2637280e5528Ca`.
 
+## Frontend clean-checkout typecheck fix (contract/deployment unaffected)
+
+A follow-up review found `npm run typecheck` failed on a genuinely clean checkout
+(`frontend/src/app/layout.tsx` referenced `LayoutProps<"/">`, a type Next.js only generates into
+`.next/types` — present after a local `next build` had already run, absent on a fresh clone, so
+`next build` masked the gap while a standalone `npm ci && npm run typecheck` did not). Fixed by
+replacing it with the stable explicit prop type `{ children: ReactNode }`. This is a frontend
+type-declaration fix only — `contracts/permitgrid.py` was not touched (confirmed: its SHA-256 is
+still `f6100b004d08ad0b1a89530b3937e66d83710c2241cf7c4cf199d5e96276eb98`, unchanged from the row
+above), the deployed contract address was not changed, and no redeploy occurred. Re-verified from
+a true clean state (`rm -rf frontend/.next && npm ci`): `npm run lint`, `npm run typecheck`,
+`npm run test` (77/77), and `npm run build` (all 8 routes, including the two dynamic routes
+`/work-order/[id]` and `/provider/[id]/work/[workId]`) all pass.
+
 ## Why this deployment happened
 
 The security/reliability audit in `docs/SECURITY_AUDIT.md` changed contract behavior (new

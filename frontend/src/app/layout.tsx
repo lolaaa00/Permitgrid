@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import type { ReactNode } from "react";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { WalletProvider } from "@/lib/wallet";
@@ -20,7 +21,7 @@ export const metadata: Metadata = {
     "PermitGrid — consensus-backed regulated-work clearance protocol on GenLayer.",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html
       lang="en"
