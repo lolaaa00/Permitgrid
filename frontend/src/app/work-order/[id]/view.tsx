@@ -93,6 +93,7 @@ export function WorkOrderDetailView({ id }: { id: string }) {
         address,
         id,
         workOrder.requirement_version,
+        workOrder.source_version,
         (s, detail) => {
           setStep(s);
           if (detail?.hash) setTxHash(detail.hash);

@@ -30,6 +30,9 @@ export default function NewClearancePage() {
       const wo = isContractConfigured()
         ? await contractReads.getWorkOrder(readClient, workOrderId.trim())
         : null;
+      const provider = isContractConfigured()
+        ? await contractReads.getProvider(readClient, providerId.trim())
+        : null;
       const currentAssessment = isContractConfigured()
         ? await contractReads
             .getClearanceAssessment(readClient, workOrderId.trim(), providerId.trim(), 0)
@@ -43,13 +46,19 @@ export default function NewClearancePage() {
         workOrderId.trim(),
         providerId.trim(),
         expectedAssessmentId,
+        // Optimistic-version protection: pass the versions just read so a
+        // source/requirement/credential change racing ahead of this
+        // submission is rejected up front rather than assessed against
+        // data that's already gone stale.
+        wo?.requirement_version ?? 0,
+        wo?.source_version ?? 0,
+        provider?.credential_version ?? 0,
         (s, detail) => {
           setStep(s);
           if (detail?.hash) setTxHash(detail.hash);
         }
       );
 
-      void wo;
       router.push(`/provider/${providerId.trim()}/work/${workOrderId.trim()}`);
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : String(err));

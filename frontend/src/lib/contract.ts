@@ -239,13 +239,20 @@ export const contractWrites = {
     account: Address,
     workOrderId: string,
     expectedRequirementVersion: number,
+    expectedSourceVersion = 0,
     onStep?: RunWriteOptions<RequirementSet>["onStep"]
   ) =>
     runContractWrite<RequirementSet>({
       writeClient,
       account,
       functionName: "extract_requirements",
-      args: [workOrderId],
+      // `expectedSourceVersion` is optimistic-version protection on the
+      // contract side (see contracts/permitgrid.py): 0 means "skip the
+      // check" (e.g. a caller with no prior read to compare against);
+      // otherwise the contract rejects as STALE_SOURCE_VERSION before
+      // spending a consensus round if the work order's source_version has
+      // moved since the caller last read it.
+      args: [workOrderId, expectedSourceVersion],
       readback: () => contractReads.getRequirementSet(getReadClient(), workOrderId, 0, true),
       verifyReadback: (rs) => rs.version > expectedRequirementVersion,
       onStep,
@@ -310,13 +317,27 @@ export const contractWrites = {
     workOrderId: string,
     providerId: string,
     expectedAssessmentId: number,
+    expectedRequirementVersion = 0,
+    expectedSourceVersion = 0,
+    expectedCredentialVersion = 0,
     onStep?: RunWriteOptions<ClearanceAssessment>["onStep"]
   ) =>
     runContractWrite<ClearanceAssessment>({
       writeClient,
       account,
       functionName: "assess_provider",
-      args: [workOrderId, providerId],
+      // Optimistic-version protection (see contracts/permitgrid.py): each
+      // expected*Version is 0 ("skip this check") or the version the
+      // caller last read; the contract rejects as STALE_REQUIREMENT_VERSION
+      // / STALE_SOURCE_VERSION / STALE_CREDENTIAL_VERSION before spending a
+      // consensus round if any has moved since.
+      args: [
+        workOrderId,
+        providerId,
+        expectedRequirementVersion,
+        expectedSourceVersion,
+        expectedCredentialVersion,
+      ],
       readback: () => contractReads.getClearanceAssessment(getReadClient(), workOrderId, providerId, 0, true),
       verifyReadback: (c) => c.assessment_id > expectedAssessmentId,
       onStep,

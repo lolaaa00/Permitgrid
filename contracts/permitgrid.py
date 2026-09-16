@@ -20,11 +20,13 @@ deterministic Python code (see `_derive_clearance`) — the LLM never returns
 the overall clearance directly.
 """
 
+import ipaddress
 import json
 import re
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 from genlayer import *
 
 # --------------------------------------------------------------------------
@@ -96,6 +98,18 @@ MAX_PROVIDERS = 1000
 MAX_SOURCES_PER_WORK_ORDER = 8
 MAX_CREDENTIAL_SOURCES = 8
 MAX_REQUIREMENTS_PER_SET = 30
+# Once a history (requirement/credential/clearance) hits this cap, further
+# writes for that entity raise rather than silently dropping/overwriting
+# anything — correct fail-closed behavior, but permanent for that entity.
+# Now that extract_requirements/assess_provider both require the caller to
+# be a genuinely interested party (creator, or creator-or-provider — see
+# the "Authorization policy" docstring on PermitGrid), an unrelated third
+# party can no longer exhaust this on someone else's behalf; only self-
+# exhaustion via 100+ genuinely repeated actions on one's own entity
+# remains possible, which is low severity and also naturally rate-limited
+# by the real consensus cost of each call. See docs/HISTORY_LIFECYCLE.md
+# for a concrete (not implemented) archival-migration design if this ever
+# becomes a real constraint.
 MAX_HISTORY_ENTRIES = 100
 MAX_STRING_LEN = 2000
 MAX_ID_LEN = 64
@@ -214,31 +228,80 @@ def _canonical_requirement_multiset(reqs: list) -> list:
 
 
 def _extract_host(url: str) -> str:
-    """Assumes `url` already passed the https/format checks below."""
-    rest = url[len("https://") :]
-    return rest.split("/")[0].split("?")[0].split(":")[0].lower()
+    """Assumes `url` already passed the https/format checks in
+    `_validate_url` below. Uses the same deterministic standard-library
+    parser (`urllib.parse.urlsplit`) as `_validate_url`, not manual string
+    slicing, so the two can never disagree on what "the host" is."""
+    return (urlsplit(url).hostname or "").lower()
 
 
 def _validate_url(url: str) -> str:
-    """URL hardening. Best-effort, not a claim of
-    complete SSRF protection — a runtime network policy layer is still the
-    responsibility of the GenVM host."""
+    """URL hardening via Python's deterministic standard parser
+    (`urllib.parse.urlsplit`) rather than manual string slicing. Rejects
+    non-https schemes, real userinfo (`user:pass@host`, checked precisely
+    via `urlsplit`'s own `.username`/`.password` — NOT a blanket '"@" in
+    url' scan, which would also reject a harmless '@' inside a query
+    string), malformed/empty hosts, localhost/loopback, private-IP ranges,
+    and — new — ANY literal IP address as the host (IPv4, IPv6, and
+    decimal/octal/hex-obfuscated IPv4 forms all resolve the same way via
+    `ipaddress.ip_address`). Regulatory/credential authorities are always
+    named domains on the admin-managed allowlist (`approved_domains`),
+    never bare IPs, so this also closes the latent gap where an admin
+    fat-fingering an IP-shaped string into `add_approved_domain` could
+    have let a *public* IP-literal source bypass the private-IP check
+    below (which only ever blocked private ranges, not public ones).
+
+    Best-effort, not a claim of complete SSRF protection: this cannot
+    prevent DNS rebinding (a validated domain resolving to a private/
+    internal address only at actual fetch time) or verify TLS identity —
+    both are the responsibility of the GenVM host's own runtime network
+    policy at the point `gl.nondet.web.render` actually fetches, not
+    something a pre-fetch string check on this contract can enforce."""
     url = _bound_str("url", url, 500)
-    if "@" in url:
-        raise ValueError("credential-bearing URLs are rejected")
     if not url.lower().startswith("https://"):
         raise ValueError("only https:// URLs are accepted")
-    rest = url[len("https://") :]
-    if not rest or rest[0] in ("/", ":", "?"):
-        raise ValueError("malformed URL")
-    host = rest.split("/")[0].split("?")[0].split(":")[0].lower()
+    parsed = urlsplit(url)
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("credential-bearing URLs are rejected")
+    host = (parsed.hostname or "").lower()
     if not host:
         raise ValueError("malformed URL")
-    if host in ("localhost", "0.0.0.0", "::1") or host.endswith(".localhost"):
+    if host in ("localhost", "0.0.0.0") or host.endswith(".localhost"):
         raise ValueError("localhost/loopback URLs are rejected")
+    if _is_ip_literal_host(host):
+        raise ValueError(
+            "IP-literal URLs are rejected; use a registered regulatory-"
+            "authority domain name"
+        )
     if _PRIVATE_IP_RE.match(host):
         raise ValueError("private-IP URLs are rejected")
     return url
+
+
+def _is_ip_literal_host(host: str) -> bool:
+    """True if `host` is (or disguises) a literal IP address rather than a
+    DNS name. Covers standard dotted-quad IPv4 and IPv6 via
+    `ipaddress.ip_address` (which deliberately rejects non-canonical
+    forms — that strictness is exactly why it does NOT catch the second
+    check below) plus the classic decimal/hex-integer IPv4-obfuscation
+    techniques used to bypass string-based host allowlists, e.g.
+    `https://2130706433/` and `https://0x7f000001/` both resolve to
+    `127.0.0.1`. A real regulatory-authority domain registered via
+    `add_approved_domain` is never purely numeric/hex across every label
+    (no real TLD is), so rejecting an all-digit or 0x-hex host outright
+    cannot reject a legitimate authority domain."""
+    if not host:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        pass
+    if host.startswith("0x"):
+        body = host[2:].replace(".", "")
+        return bool(body) and all(c in "0123456789abcdefABCDEF" for c in body)
+    body = host.replace(".", "")
+    return bool(body) and body.isdigit()
 
 
 def _host_is_approved(host: str, approved_domains) -> bool:
@@ -249,6 +312,28 @@ def _host_is_approved(host: str, approved_domains) -> bool:
         if host == domain or host.endswith("." + domain):
             return True
     return False
+
+
+def _require_sources_still_approved(sources: list, approved_domains) -> None:
+    """`_validate_sources` only ever runs at registration/update time
+    (`register_work_order`, `update_regulatory_sources`,
+    `update_credentials`). If the admin later calls
+    `remove_approved_domain`, a source URL stored earlier is otherwise
+    left untouched and would still be fetched — silently defeating
+    revocation. Both `extract_requirements` and `assess_provider` call
+    this immediately before their nondeterministic fetch block, against
+    the CURRENT `approved_domains` (not a value captured earlier), so a
+    revoked domain reliably fails closed with a clear, deterministic
+    error instead of ever being fetched again. This check is pure/
+    deterministic (same result for the leader and every validator), so it
+    correctly fails before any consensus round is spent."""
+    for s in sources:
+        host = _extract_host(s["url"])
+        if not _host_is_approved(host, approved_domains):
+            raise Exception(
+                f"SOURCE_DOMAIN_REVOKED: source host '{host}' is no longer "
+                "an approved regulatory/credential authority"
+            )
 
 
 def _validate_sources(
@@ -503,6 +588,30 @@ def _derive_clearance(requirements: list, items: list) -> str:
 
 
 class PermitGrid(gl.Contract):
+    """
+    Authorization policy (every `@gl.public.write` method, so this cannot
+    silently drift from the code again — see also each method's own
+    docstring):
+
+      register_work_order          open to any caller (first-come
+                                    registration is the intended model;
+                                    `creator` is recorded and gates every
+                                    later mutation of this work order)
+      register_provider            open to any caller (same rationale)
+      update_regulatory_sources    work-order creator only
+      extract_requirements         work-order creator only
+      create_credential_submission provider creator only
+      update_credentials           provider creator only
+      assess_provider              work-order creator OR provider creator
+                                    (either side of the pairing may request
+                                    the consensus-derived assessment; an
+                                    unrelated third party may not)
+      add_approved_domain          admin only
+      remove_approved_domain       admin only
+      propose_admin                current admin only
+      accept_admin                 the exact pending admin only
+    """
+
     work_orders: TreeMap[str, WorkOrder]
     work_order_ids: DynArray[str]
     work_order_sources: TreeMap[str, DynArray[RegSource]]
@@ -517,12 +626,21 @@ class PermitGrid(gl.Contract):
     work_order_counter: u256
 
     admin: Address
+    pending_admin: Address
+    has_pending_admin: bool
     approved_domains: TreeMap[str, bool]
 
     def __init__(self):
         self.assessment_counter = u256(0)
         self.work_order_counter = u256(0)
         self.admin = gl.message.sender_address
+        # No rotation pending at deploy time. `pending_admin` is left equal
+        # to `admin` as a harmless placeholder — it is never read while
+        # `has_pending_admin` is False (see `accept_admin`/
+        # `get_pending_admin`), so this placeholder value can never grant
+        # anyone unintended access.
+        self.pending_admin = gl.message.sender_address
+        self.has_pending_admin = False
         # Seeded with the domain(s) actually verified against during this
         # project's own real Studionet testing. The admin can extend this
         # allowlist to other jurisdictions' authorities via
@@ -553,7 +671,11 @@ class PermitGrid(gl.Contract):
     def remove_approved_domain(self, domain: str) -> None:
         """Admin-only. Removes a domain from the approved-authority
         allowlist. Existing sources already registered against it are left
-        as-is; future registrations/updates citing it will be rejected."""
+        as-is (their stored URL is unchanged), but every future fetch of
+        them is blocked: `extract_requirements`/`assess_provider` both
+        re-validate every source's host against the *current* allowlist
+        immediately before fetching (see `_require_sources_still_approved`),
+        not just at registration time."""
         self._require_admin()
         domain = _bound_str("domain", domain, 253).lower()
         if domain in self.approved_domains:
@@ -562,6 +684,54 @@ class PermitGrid(gl.Contract):
     @gl.public.view
     def list_approved_domains(self) -> list:
         return sorted(list(self.approved_domains.keys()))
+
+    @gl.public.write
+    def propose_admin(self, new_admin: str) -> None:
+        """Admin-only. First step of a two-step admin rotation (the second
+        is `accept_admin`, callable only by the exact proposed address) —
+        this avoids the single-transaction, no-recovery risk of a direct
+        `admin = new_admin` setter, where a typo'd or unreachable address
+        would permanently lock out every admin-only method with no
+        recourse. Rejects an empty/malformed address — checked explicitly
+        against the 0x+40-hex-char shape (not left to `Address`'s own
+        parsing alone, which also accepts a base64/raw-bytes form we do
+        not want to allow here, since callers should always pass the
+        canonical hex form) — and rejects proposing the current admin
+        again."""
+        self._require_admin()
+        if not isinstance(new_admin, str):
+            raise ValueError("new_admin must be a string")
+        candidate = new_admin.strip()
+        if not re.fullmatch(r"0x[0-9a-fA-F]{40}", candidate):
+            raise ValueError(
+                "new_admin must be a valid 0x-prefixed 20-byte hex address"
+            )
+        addr = Address(candidate)
+        if addr == self.admin:
+            raise ValueError("new_admin must differ from the current admin")
+        self.pending_admin = addr
+        self.has_pending_admin = True
+
+    @gl.public.write
+    def accept_admin(self) -> None:
+        """Callable only by the exact address most recently proposed via
+        `propose_admin` — not by the current admin, and not by anyone
+        else. Completes the rotation; clears the pending state so a stale
+        proposal can never be replayed after a later, different proposal
+        overwrites it."""
+        if not self.has_pending_admin:
+            raise Exception("no admin rotation is pending")
+        if gl.message.sender_address != self.pending_admin:
+            raise Exception("only the pending admin may accept this rotation")
+        self.admin = self.pending_admin
+        self.has_pending_admin = False
+
+    @gl.public.view
+    def get_pending_admin(self) -> str:
+        """Empty string when no rotation is pending."""
+        if not self.has_pending_admin:
+            return ""
+        return self.pending_admin.as_hex
 
     # ---------------------------------------------------------------- utils
 
@@ -655,14 +825,37 @@ class PermitGrid(gl.Contract):
         self.work_orders[work_order_id] = wo
 
     @gl.public.write
-    def extract_requirements(self, work_order_id: str) -> None:
-        """Consensus stage A. Validators independently fetch every
-        configured regulatory source and derive a structured requirement
-        set. Equivalence is judged on material decision fields, not prose.
-        Technical failure raises — GenVM reverts all state changes for this
-        transaction, so no partial/corrupt requirement set is ever
-        committed and the operation is safe to retry."""
+    def extract_requirements(
+        self, work_order_id: str, expected_source_version: int = 0
+    ) -> None:
+        """Consensus stage A. Work-order-creator only. Validators
+        independently fetch every configured regulatory source and derive
+        a structured requirement set. Equivalence is judged on material
+        decision fields, not prose. Technical failure raises — GenVM
+        reverts all state changes for this transaction, so no partial/
+        corrupt requirement set is ever committed and the operation is
+        safe to retry.
+
+        `expected_source_version`, if given as a positive number, must
+        match the work order's current `source_version` or this rejects
+        immediately as `STALE_SOURCE_VERSION` — before any consensus round
+        is spent — protecting a caller who read the sources before
+        another creator-only update raced ahead of them. `0` (the
+        default) skips this check, for backward compatibility with
+        existing callers that don't track an expected version. Re-checked
+        again immediately before committing, since GenVM's consensus round
+        (validators independently re-executing `extract()`) is not
+        instantaneous."""
         wo = self._require_work_order(work_order_id)
+        if wo.creator != gl.message.sender_address:
+            raise Exception("only the work order creator may extract requirements")
+        if expected_source_version and int(wo.source_version) != int(
+            expected_source_version
+        ):
+            raise Exception(
+                f"STALE_SOURCE_VERSION: expected {expected_source_version}, "
+                f"current is {int(wo.source_version)}"
+            )
         sources = list(self.work_order_sources[work_order_id])
         if len(sources) == 0:
             raise Exception("no regulatory sources configured")
@@ -675,6 +868,7 @@ class PermitGrid(gl.Contract):
         role = wo.role
         source_version = int(wo.source_version)
         source_list = [{"url": s.url, "role": s.role} for s in sources]
+        _require_sources_still_approved(source_list, self.approved_domains)
 
         def extract() -> str:
             fetched = []
@@ -896,6 +1090,19 @@ Respond with ONLY that JSON object, nothing else.
                     )
                 )
 
+        # Re-verify immediately before committing — a defense-in-depth
+        # re-check against live state right at the point of no return,
+        # independent of the pre-consensus check above, in case anything
+        # changed during the (non-instantaneous) consensus round.
+        wo2 = self.work_orders[work_order_id]
+        if expected_source_version and int(wo2.source_version) != int(
+            expected_source_version
+        ):
+            raise Exception(
+                f"STALE_SOURCE_VERSION: expected {expected_source_version}, "
+                f"current is {int(wo2.source_version)}"
+            )
+
         history = self.requirement_history[work_order_id]
         new_version = len(history) + 1
         entry = RequirementSetEntry(
@@ -909,7 +1116,6 @@ Respond with ONLY that JSON object, nothing else.
         history.append(entry)
         self.requirement_history[work_order_id] = history
 
-        wo2 = self.work_orders[work_order_id]
         wo2.requirement_version = u256(new_version)
         wo2.status = "REQUIREMENTS_ACTIVE"
         self.work_orders[work_order_id] = wo2
@@ -969,17 +1175,63 @@ Respond with ONLY that JSON object, nothing else.
     # --------------------------------------------------------- assessment --
 
     @gl.public.write
-    def assess_provider(self, work_order_id: str, provider_id: str) -> None:
-        """Consensus stage B. Validators independently fetch the provider's
-        configured credential evidence and assess every frozen requirement.
-        Overall clearance is derived deterministically afterwards — see
+    def assess_provider(
+        self,
+        work_order_id: str,
+        provider_id: str,
+        expected_requirement_version: int = 0,
+        expected_source_version: int = 0,
+        expected_credential_version: int = 0,
+    ) -> None:
+        """Consensus stage B. Callable only by the work-order creator or
+        the provider creator — either side of the pairing may request the
+        consensus-derived assessment; an unrelated third party may not.
+        Validators independently fetch the provider's configured
+        credential evidence and assess every frozen requirement. Overall
+        clearance is derived deterministically afterwards — see
         `_derive_clearance`. Technical failure raises and the transaction
         reverts: no history append, no clearance overwrite, no gate
-        opening. Safe to retry."""
+        opening. Safe to retry.
+
+        `expected_requirement_version`/`expected_source_version`/
+        `expected_credential_version`, each if given as a positive
+        number, must match the work order's/provider's current versions
+        or this rejects immediately as `STALE_REQUIREMENT_VERSION`/
+        `STALE_SOURCE_VERSION`/`STALE_CREDENTIAL_VERSION` — before any
+        consensus round is spent. `0` (the default) skips that particular
+        check, for backward compatibility. All three are re-checked again
+        immediately before committing."""
         wo = self._require_work_order(work_order_id)
         provider = self._require_provider(provider_id)
+        if gl.message.sender_address not in (wo.creator, provider.creator):
+            raise Exception(
+                "only the work order creator or the provider may run this assessment"
+            )
         if wo.status != "REQUIREMENTS_ACTIVE":
             raise Exception("work order has no active requirement set")
+        if expected_requirement_version and int(wo.requirement_version) != int(
+            expected_requirement_version
+        ):
+            raise Exception(
+                "STALE_REQUIREMENT_VERSION: expected "
+                f"{expected_requirement_version}, current is "
+                f"{int(wo.requirement_version)}"
+            )
+        if expected_source_version and int(wo.source_version) != int(
+            expected_source_version
+        ):
+            raise Exception(
+                f"STALE_SOURCE_VERSION: expected {expected_source_version}, "
+                f"current is {int(wo.source_version)}"
+            )
+        if expected_credential_version and int(provider.credential_version) != int(
+            expected_credential_version
+        ):
+            raise Exception(
+                "STALE_CREDENTIAL_VERSION: expected "
+                f"{expected_credential_version}, current is "
+                f"{int(provider.credential_version)}"
+            )
 
         req_history = self.requirement_history[work_order_id]
         if len(req_history) == 0:
@@ -994,6 +1246,7 @@ Respond with ONLY that JSON object, nothing else.
         cred_sources = [
             {"url": s.url, "role": s.role} for s in current_cred_entry.sources
         ]
+        _require_sources_still_approved(cred_sources, self.approved_domains)
 
         provider_name = provider.name
         req_payload = [
@@ -1150,6 +1403,36 @@ order. Respond with ONLY that JSON object, nothing else.
             )
 
         clearance = _derive_clearance(requirements, list(entry_items))
+
+        # Re-verify immediately before committing — a defense-in-depth
+        # re-check against live state right at the point of no return,
+        # independent of the pre-consensus check above, in case anything
+        # changed during the (non-instantaneous) consensus round.
+        wo2 = self.work_orders[work_order_id]
+        provider2 = self.providers[provider_id]
+        if expected_requirement_version and int(wo2.requirement_version) != int(
+            expected_requirement_version
+        ):
+            raise Exception(
+                "STALE_REQUIREMENT_VERSION: expected "
+                f"{expected_requirement_version}, current is "
+                f"{int(wo2.requirement_version)}"
+            )
+        if expected_source_version and int(wo2.source_version) != int(
+            expected_source_version
+        ):
+            raise Exception(
+                f"STALE_SOURCE_VERSION: expected {expected_source_version}, "
+                f"current is {int(wo2.source_version)}"
+            )
+        if expected_credential_version and int(provider2.credential_version) != int(
+            expected_credential_version
+        ):
+            raise Exception(
+                "STALE_CREDENTIAL_VERSION: expected "
+                f"{expected_credential_version}, current is "
+                f"{int(provider2.credential_version)}"
+            )
 
         self.assessment_counter += 1
         key = self._clearance_key(work_order_id, provider_id)

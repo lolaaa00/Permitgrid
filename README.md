@@ -6,6 +6,11 @@ PermitGrid answers one question on-chain, with no trusted off-chain judge:
 
 > Is this provider actually authorised to perform this exact work scope, in this jurisdiction, under the currently configured licensing and regulatory rules?
 
+## Live deployment
+
+- **App:** https://permitgrid-one.vercel.app
+- **Contract:** see `DEPLOYMENT.md` for the current address, deployed source commit/hash, and explorer link (GenLayer Studionet, chain id `61999`).
+
 ## The problem
 
 A provider can be licensed without being authorised for every job. Regulated

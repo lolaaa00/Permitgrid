@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  contract-tests:
+    name: Contract tests (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: black --check
+        run: black --check contracts/ test/
+      - name: flake8
+        run: flake8 contracts/permitgrid.py --max-line-length=100 --extend-ignore=E203,F403,F405
+      - name: pytest (deterministic, no Docker/network)
+        run: python -m pytest test/ -q --ignore=test/test_consensus_localnet.py
+
+  frontend:
+    name: Frontend (lint, typecheck, test, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test
+      - run: npm run build
+
+  # Separate, manual-only job: the real GenVM multi-validator consensus
+  # path (test/test_consensus_localnet.py) needs a running GenLayer
+  # localnet (`genlayer up`, which needs Docker). This is NOT run on every
+  # push/PR — it is best-effort scaffolding, not a job this repo currently
+  # promises green in CI, per the project's own honest-limitations norm
+  # (see HANDOFF.md). Trigger it manually from the Actions tab when you
+  # want to exercise it, and expect to need to adjust it for whatever
+  # Docker/GenLayer CLI setup the runner actually has.
+  localnet-consensus:
+    name: Localnet consensus tests (manual, best-effort)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Install genlayer CLI
+        run: npm install -g genlayer
+      - name: Start GenLayer localnet
+        run: genlayer up
+      - name: Run consensus-path tests
+        run: gltest test/test_consensus_localnet.py

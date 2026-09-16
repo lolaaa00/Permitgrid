@@ -1,5 +1,12 @@
 # PermitGrid — Final Consolidated Evidence Report
 
+> ⚠️ **Historical session log — superseded.** `DEPLOYMENT.md` is now the
+> current canonical deployment record (chain, contract address, deployed
+> source commit/hash, deployment transaction, verification steps). This
+> file is kept as audit trail for the sessions that led here; see
+> `docs/SECURITY_AUDIT.md` for the security-hardening pass that produced
+> the current deployment.
+
 This report consolidates the real, verifiable evidence produced across this project's build,
 remediation, and QA sessions. Every claim below points to something independently checkable:
 a git commit, a live transaction hash on GenLayer Studionet, or a deployed URL. Nothing here

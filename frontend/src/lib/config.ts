@@ -1,7 +1,9 @@
 // Runtime configuration for the deployed PermitGrid contract.
-// The contract is not yet deployed to a live network — until
-// NEXT_PUBLIC_CONTRACT_ADDRESS is set, every page must show a clear
-// "not configured" state rather than pretending calls will work.
+// NEXT_PUBLIC_CONTRACT_ADDRESS is set per-environment (see
+// frontend/.env.example and DEPLOYMENT.md for the current production
+// value) — if it's ever unset or malformed for a given build/environment,
+// every page must show a clear "not configured" state rather than
+// pretending calls will work.
 
 export const CONTRACT_ADDRESS = (process.env.NEXT_PUBLIC_CONTRACT_ADDRESS || "").trim();
 

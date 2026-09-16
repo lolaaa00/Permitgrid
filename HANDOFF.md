@@ -1,5 +1,13 @@
 # PermitGrid — Handoff
 
+> ⚠️ **Historical session log.** This file records past build/deploy
+> sessions and is kept as audit trail, but it is **not** the current
+> canonical record. See `DEPLOYMENT.md` for the current chain/contract/
+> deployment record, and `docs/SECURITY_AUDIT.md` for the current
+> security-hardening pass. Any commit hash, contract address, or
+> "current"/"source of truth" phrasing below is stale the moment a newer
+> session (including `DEPLOYMENT.md`) supersedes it.
+
 Status as of this build session, verified by actually running each command
 below in this environment. See `README.md` for the product/architecture
 description.
