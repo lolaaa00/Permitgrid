@@ -138,7 +138,9 @@ describe("runWriteFlow", () => {
         pollIntervalMs: 0,
         onStep: (s) => steps.push(s),
       })
-    ).rejects.toThrow("Requirement extraction did not converge. Existing active set was preserved.");
+    ).rejects.toThrow(
+      "Requirement extraction was rejected before completing (unauthorized caller, a revoked regulatory-source domain, a stale expected version, or non-convergence). Existing active set was preserved."
+    );
     expect(steps).toContain("CONSENSUS_NON_CONVERGENCE");
   });
 
@@ -151,7 +153,9 @@ describe("runWriteFlow", () => {
         verifyReadback: () => true,
         pollIntervalMs: 0,
       })
-    ).rejects.toThrow("Provider assessment failed before consensus. Existing clearance was preserved.");
+    ).rejects.toThrow(
+      "Provider assessment was rejected before completing (unauthorized caller, a revoked credential-source domain, a stale expected version, or a pre-consensus failure). Existing clearance was preserved."
+    );
   });
 
   it("normalizes a rejected signature request into WALLET_REJECTED", async () => {

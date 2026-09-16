@@ -83,6 +83,9 @@ export const contractReads = {
     ),
   getClearanceHistory: (client: ReadClient, workOrderId: string, providerId: string) =>
     view<ClearanceAssessment[]>(client, "get_clearance_history", [workOrderId, providerId]),
+  /** Empty string when no admin rotation is pending. */
+  getPendingAdmin: (client: ReadClient, final = false) =>
+    view<string>(client, "get_pending_admin", [], { final }),
 };
 
 export interface WriteWorkOrderInput {
@@ -340,6 +343,40 @@ export const contractWrites = {
       ],
       readback: () => contractReads.getClearanceAssessment(getReadClient(), workOrderId, providerId, 0, true),
       verifyReadback: (c) => c.assessment_id > expectedAssessmentId,
+      onStep,
+    }),
+
+  proposeAdmin: (
+    writeClient: WriteClient,
+    account: Address,
+    newAdmin: string,
+    onStep?: RunWriteOptions<string>["onStep"]
+  ) =>
+    runContractWrite<string>({
+      writeClient,
+      account,
+      functionName: "propose_admin",
+      args: [newAdmin],
+      readback: () => contractReads.getPendingAdmin(getReadClient(), true),
+      // The contract stores/returns the checksummed (mixed-case) form of
+      // the address (see Address.as_hex) regardless of the case the caller
+      // typed it in, so this must compare case-insensitively.
+      verifyReadback: (pending) => pending.toLowerCase() === newAdmin.trim().toLowerCase(),
+      onStep,
+    }),
+
+  acceptAdmin: (
+    writeClient: WriteClient,
+    account: Address,
+    onStep?: RunWriteOptions<string>["onStep"]
+  ) =>
+    runContractWrite<string>({
+      writeClient,
+      account,
+      functionName: "accept_admin",
+      args: [],
+      readback: () => contractReads.getPendingAdmin(getReadClient(), true),
+      verifyReadback: (pending) => pending === "",
       onStep,
     }),
 };

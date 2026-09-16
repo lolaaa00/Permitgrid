@@ -160,12 +160,24 @@ export class ReadbackMismatchError extends Error {
 
 /** Known spec error copy for specific write methods, used when a write
  * transaction resolves to a non-success outcome. Falls back to the raw
- * revert message when no canonical mapping applies. */
+ * revert message when no canonical mapping applies.
+ *
+ * These two intentionally describe every real revert cause the contract can
+ * now raise for these methods (not just non-convergence) — an unauthorized
+ * caller, a revoked source domain, a stale expected version, or genuine
+ * consensus non-convergence — because the frontend has no channel to read
+ * back the specific exception text (only the SUCCESS/ERROR execution
+ * result), and a message naming one specific cause would misdescribe the
+ * others. `propose_admin`/`accept_admin` deliberately have no entry here —
+ * their revert causes are numerous and specific (wrong caller, malformed
+ * address, no rotation pending, etc.) and no single honest summary covers
+ * them all, so they fall through to the generic execution-result message
+ * below rather than a misleading canned one. */
 export const KNOWN_FAILURE_MESSAGES: Record<string, string> = {
   extract_requirements:
-    "Requirement extraction did not converge. Existing active set was preserved.",
+    "Requirement extraction was rejected before completing (unauthorized caller, a revoked regulatory-source domain, a stale expected version, or non-convergence). Existing active set was preserved.",
   assess_provider:
-    "Provider assessment failed before consensus. Existing clearance was preserved.",
+    "Provider assessment was rejected before completing (unauthorized caller, a revoked credential-source domain, a stale expected version, or a pre-consensus failure). Existing clearance was preserved.",
 };
 
 export interface TxHandle {
